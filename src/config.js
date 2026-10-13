@@ -18,6 +18,54 @@ export const CONFIG = {
   render: {
     canvasW: 640,          // pixel-art canvas width (scaled by an integer factor to fit the window)
     canvasH: 360,          // pixel-art canvas height. 1 canvas pixel = 2 logical units
+    // ---- character animation (render only: src/client/anim.js + drawSurvivor in render.js) ------------------------
+    // Squash & stretch on damped springs, a run cycle, wall-grip paws, recoil / flinch / block poses. It is derived from state the
+    // renderer already has (position, velocity, grounded, wall contact found from the map, aim, events); it never touches the
+    // simulation. Units: seconds, canvas pixels (1 px = 2 logical units) unless it says otherwise. Debug panel: "character animations".
+    animations: {
+      enabled: true,           // false = the old rigid sprite (also the debug-panel checkbox)
+      // body spring (the squash / stretch amount s: height x (1+s), width x 1/(1+s) so the volume is kept). Natural frequency
+      // sqrt(stiffness) rad/s, damping ratio = damping / (2 sqrt(stiffness)): 1900 / 38 = 7 Hz, ratio 0.44, settles in ~0.2 s with ~20% overshoot.
+      stiffness: 1900, damping: 38,
+      leanStiffness: 1500, leanDamping: 30,   // sideways lean (shear) spring: wobble when you start / stop
+      lagStiffness: 650, lagDamping: 14,      // secondary motion (scarf, backpack, filter) lags behind the body: softer and bouncier
+      kickStiffness: 1400, kickDamping: 30,   // gun recoil slide
+      maxStretch: 0.30,        // tallest the body gets (+30%): falling / rising fast
+      maxSquash: 0.34,         // flattest (-34%): a hard landing
+      stretchPerSpeed: 0.00030,// stretch per unit/s of vertical speed beyond 80 (660 u/s jump = +17%, terminal fall 950 = +26%)
+      apexSquash: 0.05,        // a little round, wide pose at the top of a jump
+      landSquash: 0.00034,     // squash depth per unit/s of impact speed (900 u/s = 30%)
+      landMin: 140,            // landing slower than this does not squash (u/s)
+      takeoffSquash: 0.26,     // the push-off squash right at a jump (rebounds into the stretch in ~3 frames)
+      airJumpSquash: 0.16,     // kick pose of an air jump / wall jump
+      // run cycle: one hop per step, speed matched to the ground speed
+      stepPx: 17,              // canvas pixels travelled per step (at 300 u/s = 150 px/s: 8.8 steps/s)
+      bobPx: 2.6,              // body lifts this much at mid-step (x body size, x run speed)
+      runStretch: 0.10, runSquash: 0.16,   // body stretch at mid-step / squash on every foot fall
+      leanRun: 2.2,            // body leans this many px into the run direction (top vs feet) at full speed
+      leanAccel: 1.5,          // extra lean while accelerating / braking (the stop wobble)
+      leanAir: 1.4,            // lean with horizontal speed in the air
+      lagPx: 1.7,              // how far the scarf / pack trails behind at full speed
+      // idle
+      breath: 0.045, breathPeriod: 2.7,   // slow breathing bob (stretch amount, seconds)
+      blinkEvery: [2.2, 5.5], blinkTime: 0.13,
+      // wall grip
+      gripMaxVy: 190,          // touching a wall in the air and sliding slower than this = gripping (a free fall is faster)
+      gripFlat: 0.10,          // body is pressed flat against the wall (width -10%; -20% with Limpet)
+      gripLean: 1.6,           // top of the body leans into the wall (px)
+      gripRate: 20,            // how fast the grip pose fades in (1/s); it lets go twice as fast
+      // combat
+      recoilKick: 2.5,         // the gun slides back this many px per shot
+      recoilPush: 1.3,         // the body is pushed back opposite to the aim (px)
+      recoilSquash: 0.11,      // squash along the shot
+      hitSquash: 0.24, hitLean: 55, // flinch on a hit (squash, and a lean velocity in the direction of the bullet)
+      blockSquash: 0.10,       // brace pose while the shield is up
+      tumbleTime: 0.6,         // after a hit or an out-of-bounds launch the body tumbles while it flies for up to this long
+      tumbleSpin: 11,          // rad/s
+      tumbleMinSpeed: 300,     // ...but only while it is actually flying this fast (u/s)
+      deathTime: 0.32,         // the death pop before the body is gone
+      winHop: 8,               // victory hop height (px); the hop repeats while the round-end banner shows
+    },
   },
 
   // ---- player body ---------------------------------------------------------------
@@ -152,7 +200,7 @@ export const CONFIG = {
   // ---- falling out of the open arena ------------------------------------------------------------------
   oob: {
     margin: 24,            // body centre this far outside the left/right/bottom field edge counts as "out"
-    damagePct: 0.30,       // fraction of max HP lost when leaving by the bottom or the sides
+    damagePct: 0.15,       // fraction of max HP lost when leaving by the bottom or the sides (was 0.30; halved after playtests)
     invulnerable: 1.5,     // seconds without further out-of-bounds damage after being thrown back
     bottomLaunchVy: 1050,  // upward launch speed when coming back from the pit
     bottomLaunchMaxVx: 450,// horizontal launch towards the centre, clamped to this
@@ -227,12 +275,19 @@ export const CONFIG = {
 
   // ---- online play (src/net) --------------------------------------------------------------------------------
   net: {
-    gameVersion: 3,            // host and client must match, otherwise "refresh the page"
+    gameVersion: 4,            // host and client must match, otherwise "refresh the page"
     roomPrefix: 'rawalan-',    // PeerJS id = prefix + room code (keeps ids unique on the shared public broker)
     codeAlphabet: 'ABCDEFGHJKMNPQRSTUVWXYZ23456789',   // no 0/O, 1/I/L: unambiguous
     codeLength: 5,
-    snapshotEvery: 2,          // host sends a snapshot every N ticks (2 = 30 Hz)
-    interpDelay: 0.10,         // seconds the client renders in the past (interpolation buffer)
+    snapshotEvery: 2,          // slow rate: the host sends a snapshot every N ticks (2 = 30 Hz): used on a slow, lossy link or a slow host
+    snapshotFastEvery: 1,      // fast rate (1 = 60 Hz): used while the link is good (see snapshotFastMaxRtt / MaxLoss)
+    snapshotFastMaxRtt: 220,   // ms: above this round trip the host drops to the slow rate
+    snapshotFastMaxLoss: 0.08, // fraction of the packets lost or too late (either direction): above this, slow rate
+    interpDelay: 0.06,         // seconds the client renders in the past at the start (it then adapts quickly upwards and slowly downwards, see interpMin / interpMax)
+    interpMin: 0.04,           // adaptive interpolation delay: never less than this (s) ...
+    interpMax: 0.15,           // ... never more than this; target = 1.5 snapshot intervals + a margin for the measured jitter / spread + 4 ms
+    lagCompMax: 0.15,          // host: a client's bullets are tested against where the host player WAS up to this many seconds ago (what the client saw)
+    hostSlowHz: 52,            // measured host ticks per second below this = "host is running slow" warning on both sides
     extrapolateMax: 0.10,      // seconds the client may extrapolate when the buffer runs dry
     inputRedundancy: 3,        // each input message repeats the last N frames (packet loss insurance)
     pingEvery: 1.0,            // seconds between pings

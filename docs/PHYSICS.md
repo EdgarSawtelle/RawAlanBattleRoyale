@@ -172,7 +172,7 @@ Presets: **R** = "closer to ROUNDS" (recommended), **S** = "safer" (smaller chan
 | Bounce | Perfect mirror, speed x1, damage x1, consumed on player hit [sourced] | Same | Keep | | None |
 | Terrain hit shape | Ray (zero width) for terrain, 0.375 world radius for players [sourced] | Circle r=4 for both | Optional: split radii | `bulletRadiusTerrain 1.5`, `bulletRadius 6` | Low |
 | Block | Reverses the bullet, 0.3 s, cd 4 s [sourced] | Destroys the bullet, 0.3 s, cd 4 s | Optional, owner decision | `blockReverse false` | Medium (clashes with Return Policy) |
-| Out of bounds | 51 HP flat, top counts, block saves you [sourced] | 30%, top free | Optional: block cancels OOB damage | `oob.blockSaves true` | Low |
+| Out of bounds | 51 HP flat, top counts, block saves you [sourced] | 15% (was 30%), top free | Optional: block cancels OOB damage | `oob.blockSaves true` | Low |
 | Reload | Free refill after idle; 3 ammo, 0.3 s, 1.5 s [sourced] | 5 ammo, 1/3 s, 2.0 s, reload only when empty | Out of physics scope. Owner decision | | |
 | Time to kill | 2 hits (55 on 100 HP) [inferred] | 5 hits (20 on 100 HP) | Out of scope; mention only | | |
 

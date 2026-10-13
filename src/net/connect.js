@@ -24,8 +24,8 @@ export function chooseNetwork(params) {
 export function describeError(err) {
   switch (err && err.type) {
     case 'peer-unavailable': return 'Room not found. Check the code and make sure the host still has the game open.';
-    case 'broker': return 'Cannot reach the matchmaking server (PeerJS). Check your internet connection and try again in a moment.';
-    case 'failed': case 'timeout': return 'Connection failed. This usually means a strict network or firewall (NAT) is blocking direct connections. Try another network, for example a phone hotspot.';
+    case 'broker': return 'Cannot reach the matchmaking server (the PeerJS cloud). Check your internet connection. On a work or school network it is often blocked: try a phone hotspot or your home network. The CONNECTION TEST on the main screen shows which step fails.';
+    case 'failed': case 'timeout': return 'The peer-to-peer connection to the host could not be set up. Some networks, mostly work and school ones, block it. Try a phone hotspot or your home network (or ask your friend to host). The CONNECTION TEST on the main screen shows what this network allows.';
     case 'id-taken': return 'That room code is already in use. Try again.';
     case 'full': return 'That room is full.';
     case 'version': return 'The host runs a different version of the game. Refresh the page and try again.';

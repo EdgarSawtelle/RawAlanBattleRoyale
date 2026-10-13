@@ -77,8 +77,9 @@ node tests/physics.test.mjs # the physics pass (preset R): wall grip needs input
                           # ledge pop / head-bump nudge, momentum carry, bullet drop at 300 / 600 / 900, the aim solver, bot arc aim (18 tests)
 node tests/match.test.mjs # the first 10 cards, the caps, the quiz / card pick / match state machine (28 tests)
 node tests/cards.test.mjs # the 20 later cards and the machinery under them: one test per card, dynamic modifiers, removeCard, fuses / timers, slabs, air jumps, hooks, offers with 30 cards, the nastiest stacks (35 tests)
-node tests/net.test.mjs   # the online layer over a loopback network with a virtual clock and simulated latency / jitter / loss (19 tests)
-node tests/predict.test.mjs # own-movement prediction (10 tests): press-to-movement at 60 / 100 / 150 ms RTT, convergence with no drift over long
+node tests/net.test.mjs   # the online layer over a loopback network with a virtual clock and simulated latency / jitter / loss (28 tests: also adaptive interpolation, the 60 / 30 Hz switch, lag compensation and its bound, the unreliable channel and its fallback, local echo, the network readout, the connection diagnosis)
+node tests/latency.mjs [trials]  # NOT a pass/fail suite: a table of how late each thing a player perceives arrives (own movement / shot / block, opponent moves, taking and landing a hit, what the host sees of the client) at 40 / 80 / 150 ms RTT with jitter and loss, on the virtual network. Use it to compare a netcode change before and after
+node tests/predict.test.mjs # own-movement prediction (13 tests, Kickback recoil included): press-to-movement at 60 / 100 / 150 ms RTT, convergence with no drift over long
                           # runs (wall jumps, platform rides, knockback, out of bounds, round restarts, bad links), correction size, the host's input queue
 node tests/maps.test.mjs   # every map of the rotation (30 tests): spawns safe, ids, overlaps, moving things never pass through solids, mirror image, hazard size, reachability from both spawns (prints what needs wall climbing), the rotation rule, a 60 s bot game on each map
 node tests/reach.mjs      # map reachability by single jumps / lifts / wall climbing (prints anything unreachable)
@@ -104,12 +105,17 @@ It drives two Edge windows with the DevTools protocol: create room, join through
 quiz as answerer and as watcher, reveal, hover, card pick, scores on both sides, a disconnect with automatic rejoin, leaving.
 Screenshots of both sides land in `screenshots/phase2/`. The "host simulates at about 60 ticks per second" check measures the host page's real tick rate and dips below 45 when the machine is busy (other browsers running): rerun it before suspecting the code. Set `EDGE=path/to/browser` if Edge or Chrome is somewhere unusual, `--base=http://host:port` for another server.
 
+On the real path it also checks that both ends hold a real unreliable `RTCDataChannel` (`ordered false, maxRetransmits 0, id 11, open`), that the snapshots travel on it, that the selected ICE candidate pair is known (`direct` / `relayed`), and prints `netInfo()` of both sides (ping, jitter, loss, channel, path, host tick rate, snapshot rate, interpolation delay) and how it feels in a real browser (click to your own bullet, right click to your own shield, the host presses a key to the client sees it). A busy machine also shows up there: the host really runs slow, both sides then say so, and the page reports that its own frame rate is too low to measure the feel.
+
 ## 7. Two houses (what only a human can test)
 
 The tests above run both players on one machine. Before relying on it, try it with a friend on another network:
+run the lobby's CONNECTION TEST on both machines first (a copyable plain-language result: matchmaking server, peer-to-peer / UDP, strict NAT), then
 create a room, send the link, check that you connect, that movement feels OK (see `docs/DESIGN.md` section 5 for the numbers),
 that the quiz and card pick are visible on both sides, and what happens when one of you closes the tab or the Wi-Fi drops.
+While you play, open the debug panel (backquote key): its Network block shows ping, jitter, loss, `direct` or `relayed`, the channel the snapshots use and the host's tick rate.
 If it fails to connect, the lobby says so; two strict NATs without a TURN server cannot connect: try a phone hotspot.
+What cannot be tested on one machine: a real two-network or corporate-network link (relay-only paths, strict NATs, real loss, a real 100+ ms round trip on the real WebRTC stack).
 
 ## 8. Deploying to GitHub Pages
 

@@ -110,6 +110,45 @@ async function main() {
     check('the client sees its own player where the host has it (within 40 units)', Math.abs(xa - xb) < 40, xa + ' vs ' + xb);
     const ping = await B.eval('window.__game.session.ping');
     check('ping is measured', typeof ping === 'number' && ping >= 0 && ping < 500, String(ping));
+    // the network readout: which channel carries the snapshots, direct or relayed, ping / jitter / loss, the host's tick rate
+    await sleep(1500);
+    const ni = await Promise.all([A.eval('JSON.stringify(window.__game.session.netInfo())'), B.eval('JSON.stringify(window.__game.session.netInfo())')]);
+    console.log('      netInfo host:  ', ni[0]); console.log('      netInfo client:', ni[1]);
+    const nh = JSON.parse(ni[0]), nc = JSON.parse(ni[1]);
+    // (a busy machine really does run slow: then BOTH sides must say so; on an idle one it is ~60 and nobody complains)
+    check('the host measures its tick rate and the client reads the same from the snapshots (and agrees on "running slow")', nh.hostHz > 20 && Math.abs(nh.hostHz - nc.hostHz) < 6 && nh.hostSlow === nc.hostSlow && nh.hostSlow === (nh.hostHz < 52), nh.hostHz + ' / ' + nc.hostHz + ' slow ' + nh.hostSlow + '/' + nc.hostSlow);
+    check('jitter and loss are measured, the quality is not "unknown"', typeof nc.jitter === 'number' && typeof nc.loss === 'number' && nc.quality !== 'unknown' && nh.quality !== 'unknown', nc.quality + ' / ' + nh.quality);
+    if (!LOCAL) {
+      const dc = await Promise.all([A.eval('(() => { const u = window.__game.room.host.transport.u; return JSON.stringify(u ? { ordered: u.ordered, maxRetransmits: u.maxRetransmits, id: u.id, state: u.readyState, negotiated: u.negotiated } : null); })()'), B.eval('(() => { const u = window.__game.joined.guest.transport.u; return JSON.stringify(u ? { ordered: u.ordered, maxRetransmits: u.maxRetransmits, id: u.id, state: u.readyState, negotiated: u.negotiated } : null); })()')]);
+      console.log('      RTCDataChannel host:', dc[0], ' client:', dc[1]);
+      for (const [who, v] of [['host', dc[0]], ['client', dc[1]]]) { const d = JSON.parse(v); check('the ' + who + ' has a real unreliable data channel (ordered false, maxRetransmits 0, open)', !!d && d.ordered === false && d.maxRetransmits === 0 && d.state === 'open' && d.negotiated === true, v); }
+      check('snapshots and inputs are carried by the unreliable channel on both sides', /unreliable/.test(nh.channel) && /unreliable/.test(nc.channel), nh.channel + ' / ' + nc.channel);
+      check('the selected ICE candidate pair is known (direct or relayed)', !!nc.path && (nc.path.kind === 'direct' || nc.path.kind === 'relayed'), JSON.stringify(nc.path));
+    }
+    // how it feels in a real browser (same machine: the round trip is ~1-6 ms, so this is the pipeline's own delay): click -> your bullet, right click -> your shield, host presses D -> the client sees the host player move
+    {
+      const feel = await B.eval(`(async () => {
+        const g = window.__game, s = g.session, c = document.getElementById('game'), r = c.getBoundingClientRect();
+        const raf = () => new Promise((res) => requestAnimationFrame(res)), wait = (ms) => new Promise((res) => setTimeout(res, ms));
+        const at = (type, button) => c.dispatchEvent(new MouseEvent(type, { clientX: r.left + 320 / 640 * r.width, clientY: r.top + 4 / 360 * r.height, button, bubbles: true, cancelable: true }));
+        const out = {}; at('mousemove', 0); await wait(250);
+        { let n = 0; const t0 = performance.now(); while (performance.now() - t0 < 500) { await raf(); n++; } out.fps = Math.round(n * 1000 / (performance.now() - t0)); }   // (how many frames this page really gets: a busy machine cannot be measured)
+        { const t0 = performance.now(); at('mousedown', 0); let dt = null; while (performance.now() - t0 < 1500) { await raf(); if (s.world.state.bullets.some((b) => b.owner === 1)) { dt = performance.now() - t0; break; } } window.dispatchEvent(new MouseEvent('mouseup', { button: 0 })); out.ownShot = dt; }
+        await wait(2500);
+        { const t0 = performance.now(); at('mousedown', 2); let dt = null; while (performance.now() - t0 < 1500) { await raf(); if (s.world.state.players[1].blockLeft > 0) { dt = performance.now() - t0; break; } } window.dispatchEvent(new MouseEvent('mouseup', { button: 2 })); out.ownBlock = dt; }
+        return JSON.stringify(out);
+      })()`);
+      const f = JSON.parse(feel);
+      const poll = B.eval(`(async () => { const s = window.__game.session; const x0 = s.world.state.players[0].x; const raf = () => new Promise((res) => requestAnimationFrame(res)); const t0 = Date.now(); while (Date.now() - t0 < 2500) { await raf(); if (Math.abs(s.world.state.players[0].x - x0) > 0.5) return Date.now(); } return null; })()`);
+      await sleep(300);
+      const tA = await A.eval("(() => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyD', bubbles: true })); return Date.now(); })()");
+      const tB = await poll; await A.eval("window.dispatchEvent(new KeyboardEvent('keyup', { code: 'KeyD', bubbles: true }))");
+      f.opponentMoves = tB === null ? null : tB - tA;
+      console.log('      feel in a real browser (client): click -> own bullet drawn ' + (f.ownShot === null ? '-' : Math.round(f.ownShot)) + ' ms, right click -> own shield drawn ' + (f.ownBlock === null ? '-' : Math.round(f.ownBlock)) + ' ms, host presses D -> client sees it ' + (f.opponentMoves === null ? '-' : f.opponentMoves) + ' ms');
+      if (f.fps >= 25) check('your own shot and shield show within a few frames (they do not wait for the host)', f.ownShot !== null && f.ownShot < 150 && f.ownBlock !== null && f.ownBlock < 150, JSON.stringify(f));
+      else console.log('      (the client page only gets ' + f.fps + ' frames/s: the machine is busy, the feel numbers above are not meaningful and are not checked)');
+      check('the host player\'s movement shows on the client within about 250 ms on a fast link', f.opponentMoves !== null && f.opponentMoves < 250, JSON.stringify(f));
+    }
     const info = await Promise.all([A.eval('(() => { const t = window.__game.room.host.transport; return JSON.stringify({ unreliable: !!t.usingUnreliable, tx: t.stats.tx, txBytes: t.stats.txBytes, rx: t.stats.rx }); })()'), B.eval('(() => { const t = window.__game.joined.guest.transport; return JSON.stringify({ unreliable: !!t.usingUnreliable, tx: t.stats.tx, rxBytes: t.stats.rxBytes, rx: t.stats.rx }); })()')]);
     console.log('      transport A(host):', info[0], ' B(client):', info[1]);
     await Promise.all([A.shot('duel-host'), B.shot('duel-client')]);
@@ -152,7 +191,11 @@ async function main() {
     // hover: the picker points at a card, the watcher follows
     await B.eval(`(async () => {
       const m = await import('./src/client/screens.js'); const c = document.getElementById('game'); const r = c.getBoundingClientRect();
-      let pos = null; for (let y = 0; y < 360 && !pos; y += 2) for (let x = 0; x < 640 && !pos; x += 2) { const it = m.hitIntent(x, y); if (it && it.type === 'pick') pos = [x, y]; }
+      let pos = null;
+      for (let tries = 0; tries < 40 && !pos; tries++) {                       // (the click regions exist once the screen has been drawn: give it a few frames)
+        for (let y = 0; y < 360 && !pos; y += 2) for (let x = 0; x < 640 && !pos; x += 2) { const it = m.hitIntent(x, y); if (it && it.type === 'pick') pos = [x, y]; }
+        if (!pos) await new Promise((r) => setTimeout(r, 50));
+      }
       const mv = new MouseEvent('mousemove', { clientX: r.left + pos[0] / 640 * r.width, clientY: r.top + pos[1] / 360 * r.height, bubbles: true }); c.dispatchEvent(mv); window.dispatchEvent(mv);
     })()`);
     await sleep(700);

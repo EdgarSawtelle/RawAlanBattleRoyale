@@ -8,6 +8,8 @@ import { MAPS, ROTATION, getMap } from '../maps/index.js';
 import { loadMap, setCards, healAll, startRound, intent } from '../sim/world.js';
 import { debugQuiz, debugCardPick, debugMatchEnd, debugSetScore, validQuestions } from '../sim/match.js';
 import { killPlayer } from '../sim/combat.js';
+import { CONFIG } from '../config.js';
+import { describePath, pct, QUALITY_COLOR } from '../net/quality.js';
 import { listBackgrounds, setBackgroundOverride, getBackgroundOverride, setBackgroundAnimated, isBackgroundAnimated, getBackgroundStatus } from './background.js';
 
 // Online: the cheats (give cards, heal, jump to screens, set score, map, pause...) only exist for the HOST and act on the
@@ -21,11 +23,13 @@ export function createDebugPanel(root, { getSession, renderer, getFps, getPing }
   root.innerHTML = `
     <div class="dbg-head"><b>DEBUG</b><span class="dbg-keys">toggle: \` / F1 / F2</span></div>
     <div class="dbg-row dbg-info"><span>FPS <b id="dbg-fps">-</b></span><span>PING <b id="dbg-ping">-</b></span><span>PRED <b id="dbg-pred">-</b></span><span>TICK <b id="dbg-tick">0</b></span><span>BULLETS <b id="dbg-bul">0</b></span></div>
+    <div id="dbg-netbox" hidden><div class="dbg-sec">Network <span id="dbg-netq" class="dbg-sub"></span></div><div id="dbg-net" class="dbg-sub" style="line-height:1.45;white-space:pre-wrap"></div></div>
     <div class="dbg-sec">Background <span id="dbg-bgstat" class="dbg-sub"></span></div>
     <div class="dbg-row"><select id="dbg-bg"></select><select id="dbg-bgv"></select></div>
     <label><input type="checkbox" id="dbg-bganim"> animate background (off = frozen frame, for slow machines)</label>
     <div class="dbg-sec">Display / cheats</div><div id="dbg-note" class="dbg-sub"></div>
     <label><input type="checkbox" id="dbg-hit"> show hitboxes</label>
+    <label><input type="checkbox" id="dbg-anim"> character animations (squash, run cycle, wall paws; off = rigid sprite)</label>
     <label data-cheat><input type="checkbox" id="dbg-inv"> I am invulnerable</label>
     <label data-cheat><input type="checkbox" id="dbg-pause"> pause</label>
     <div class="dbg-row" data-cheat>
@@ -91,7 +95,15 @@ export function createDebugPanel(root, { getSession, renderer, getFps, getPing }
   // maps
   const mapSel = $('dbg-map');
   { const o = document.createElement('option'); o.value = ''; o.textContent = 'rotate: a new map every round'; mapSel.appendChild(o); }
-  for (const m of ROTATION.map(getMap)) { const o = document.createElement('option'); o.value = m.id; o.textContent = m.name + ' (' + m.id + ')'; mapSel.appendChild(o); }
+  { // 30+ maps: grouped by backdrop (a native <select> scrolls), each group sorted by name
+    const groups = new Map();
+    for (const m of ROTATION.map(getMap)) { if (!groups.has(m.background)) groups.set(m.background, []); groups.get(m.background).push(m); }
+    for (const [bg, list] of groups) {
+      const g = document.createElement('optgroup'); g.label = bg.replace(/-/g, ' ') + ' (' + list.length + ')';
+      for (const m of list.sort((p, q) => p.name.localeCompare(q.name))) { const o = document.createElement('option'); o.value = m.id; o.textContent = m.name + (m.family ? ' - ' + m.family : ''); g.appendChild(o); }
+      mapSel.appendChild(g);
+    }
+  }
   const mapWant = () => (state().mapLock ? state().mapId : state().rotate ? '' : state().mapId);
   mapSel.value = mapWant();
   // '' = the normal rotation; a map id pins that map (and reloads the round on it)
@@ -118,6 +130,7 @@ export function createDebugPanel(root, { getSession, renderer, getFps, getPing }
 
   // toggles
   $('dbg-hit').onchange = (e) => { renderer.showHitboxes = e.target.checked; };
+  $('dbg-anim').checked = !!CONFIG.render.animations.enabled; $('dbg-anim').onchange = (e) => { CONFIG.render.animations.enabled = e.target.checked; };   // local and cosmetic: allowed for everyone
   $('dbg-inv').onchange = (e) => { state().cheats.invulnerable[0] = e.target.checked; };
   $('dbg-pause').onchange = (e) => { if (cheatsAllowed()) sess().paused = e.target.checked; };
   $('dbg-step').onclick = () => { if (!cheatsAllowed() || sess().role === 'host') return; sess().paused = true; $('dbg-pause').checked = true; sess().stepOnce = true; };
@@ -135,8 +148,28 @@ export function createDebugPanel(root, { getSession, renderer, getFps, getPing }
     for (const el of root.querySelectorAll('[data-practice]')) el.style.display = (guest || host) ? 'none' : '';
     $('dbg-note').textContent = guest ? 'Online client: cheats are disabled (only the host can use them).' : host ? 'Online host: cheats act on the shared match.' : '';
   }
+  // Online: ping with jitter and loss, the channel the snapshots really use, direct or relayed, the host's tick rate, rates and bandwidth.
+  let bw = { at: 0, tx: 0, rx: 0, up: 0, down: 0 };
+  function netRows() {
+    const s = sess(), box = $('dbg-netbox');
+    if (!s || !s.netInfo || (s.role !== 'host' && s.role !== 'guest')) { box.hidden = true; return; }
+    box.hidden = false;
+    const n = s.netInfo(), tr = s.transport, now = performance.now();
+    if (tr && now - bw.at >= 1000) { const dt = (now - bw.at) / 1000; if (bw.at) { bw.up = (tr.stats.txBytes - bw.tx) / dt; bw.down = (tr.stats.rxBytes - bw.rx) / dt; } bw.at = now; bw.tx = tr.stats.txBytes; bw.rx = tr.stats.rxBytes; }
+    const f = (v, d = 0) => (v === null || v === undefined ? '-' : v.toFixed(d));
+    const lines = [
+      'ping ' + f(n.ping) + ' ms, jitter ' + f(n.jitter, 1) + ' ms, loss ' + pct(n.loss) + ' (to you ' + pct(n.lossIn) + ', from you ' + pct(n.lossOut) + ')',
+      'snapshots travel on: ' + n.channel,
+      'connection: ' + (n.path ? describePath(n.path) : tr && tr.channel ? 'checking...' : 'same browser (local test mode)'),
+      'host ticks: ' + (n.hostHz === null ? '-' : n.hostHz.toFixed(1)) + ' / ' + CONFIG.tickRate + ' per s' + (n.hostSlow ? '  <- HOST IS RUNNING SLOW' : ''),
+      'snapshots: ' + n.snapHz + ' per s' + (n.interpMs !== null ? ', drawn ' + n.interpMs + ' ms in the past' : ', lag compensation window ' + n.lagCompMs + ' ms (client draws ' + n.viewDelayMs + ' ms behind)'),
+      'traffic: up ' + (bw.up / 1024).toFixed(1) + ' kB/s, down ' + (bw.down / 1024).toFixed(1) + ' kB/s',
+    ];
+    $('dbg-net').textContent = lines.join('\n');
+    $('dbg-netq').textContent = n.quality; $('dbg-netq').style.color = QUALITY_COLOR[n.quality];
+  }
   function refresh() {
-    applyMode();
+    applyMode(); netRows();
     $('dbg-fps').textContent = String(Math.round(getFps()));
     { const bs = getBackgroundStatus(); $('dbg-bgstat').textContent = (bs.key || '-') + ' ' + bs.status; }
     $('dbg-ping').textContent = getPing();
@@ -147,7 +180,7 @@ export function createDebugPanel(root, { getSession, renderer, getFps, getPing }
       const names = {}; for (const id of p.cards) names[id] = (names[id] || 0) + 1;
       const list = Object.keys(names).map((id) => CARDS_BY_ID[id].name + (names[id] > 1 ? ' x' + names[id] : '')).join(', ') || 'none';
       const s = p.stats;
-      return '<div><b>' + (i === 0 ? 'ME' : 'DUMMY') + '</b>: ' + list + '<br><span class="dbg-sub">hp ' + Math.round(p.hp) + '/' + Math.round(s.maxHp) + ' dmg ' + s.damage.toFixed(1) + ' rate ' + s.fireRate.toFixed(1) + '/s mag ' + Math.round(s.magazine) + ' bounces ' + s.bounces + ' speed ' + Math.round(s.moveSpeed) + '</span></div>';
+      return '<div><b>' + (i === 0 ? 'ME' : 'DUMMY') + '</b>: ' + list + '<br><span class="dbg-sub">hp ' + Math.round(p.hp) + '/' + Math.round(s.maxHp) + ' dmg ' + (s.damage === undefined ? '-' : s.damage.toFixed(1)) + ' rate ' + (s.fireRate === undefined ? '-' : s.fireRate.toFixed(1)) + '/s mag ' + Math.round(s.magazine) + ' bounces ' + s.bounces + ' speed ' + Math.round(s.moveSpeed) + '</span></div>';
     });
     $('dbg-owned').innerHTML = own.join('');
     if (mapSel.value !== mapWant()) mapSel.value = mapWant();

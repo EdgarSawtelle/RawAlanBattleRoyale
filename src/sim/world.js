@@ -40,6 +40,8 @@ export function createState({ mapId, seed = 1, cards = [[], []], rotate = false,
     bullets: [],
     blocks: [],
     timers: [],             // delayed card effects (see combat.js schedule)
+    lag: [0, 0],            // lag compensation (online host only): ticks to rewind the OTHER player for each player's bullets (0 = none)
+    hist: [],               // ring of the last 16 ticks of body positions [tick, x0, y0, x1, y1] (what lag compensation rewinds to)
     cheats: { invulnerable: [false, false] },   // set by the debug panel
     match: createMatch(),   // quiz / card pick / match end state (sim/match.js)
     events: [],
@@ -69,7 +71,7 @@ export function startRound(state) {
   state.phase = 'playing'; state.overTimer = 0; state.result = null;
   Object.assign(state.match, { quiz: null, result: null, offer: [], removed: [], dummy: null, pickedCard: null, loser: -1, skipped: false, again: [false, false] });
   state.roundTick = 0; state.roundTime = 0; state.suddenDeath = false;
-  state.bullets = []; state.timers = [];
+  state.bullets = []; state.timers = []; state.hist = [];
   state.blocks = map.destructibles.map((d) => {
     const hp = d.hp ?? (d.kind === 'barrel' ? CONFIG.hazards.barrel.hp : 50);
     return { id: d.id, kind: d.kind || 'crate', x: d.x, y: d.y, w: d.w, h: d.h, hp, maxHp: hp, alive: true };
@@ -169,6 +171,7 @@ export function step(state, inputs, dt = STEP) {
   const colliders = getColliders(state);
 
   for (let i = 0; i < 2; i++) stepPlayer(state, state.players[i], (inputs && inputs[i]) || NEUTRAL, colliders, dt);
+  state.hist[state.tick & 15] = [state.tick, state.players[0].x, state.players[0].y, state.players[1].x, state.players[1].y];
   stepBullets(state, colliders, dt);
   for (let i = 0; i < 2; i++) checkOutOfBounds(state, state.players[i], colliders);
   stepHazards(state, getHazards(state));

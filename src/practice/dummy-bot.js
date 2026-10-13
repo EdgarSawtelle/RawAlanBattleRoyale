@@ -169,6 +169,7 @@ function moveLogic(bot, state, me, cols, out, dt, hz) {
   // arrived: stand around for a moment, then choose somewhere else
   if (dir === 0 && Math.abs(goal.top - feetY) < 12 && me.grounded) { if (bot.waitTimer <= 0) { bot.waitTimer = between(bot, 0.3, 1.2); bot.goalTimer = Math.min(bot.goalTimer, bot.waitTimer); } dir = 0; }
 
+  if (dir === 0 && goalBelow && me.grounded) dir = goal.x >= me.x ? 1 : -1;     // standing on a crate right above the goal: step off it
   let jump = false;
   if (me.grounded) {
     const aheadX = me.x + (dir || 1) * (me.w / 2 + 12);
@@ -177,7 +178,7 @@ function moveLogic(bot, state, me, cols, out, dt, hz) {
     if (wallAhead) {
       // hop over low cover; if the wall is too high, give up this goal
       if (pointSolid(aheadX, me.y - 105, cols)) bot.goalTimer = 0;
-      else if (gapLanding(me, dir, cols, feetY, 70, 30, 230)) jump = true;         // only hop if there is wide ground to land on beyond it
+      else if (gapLanding(me, dir, cols, feetY, 40, 30, 230)) jump = true;         // only hop if there is ground (at least 40 wide: a stair step counts) to land on beyond it
       else dir = 0;
     } else if (dir !== 0 && !groundAhead) {
       if (goalAbove || (!goalBelow && gapLanding(me, dir, cols, feetY))) jump = true;     // jump the gap if there is something to land on
@@ -185,7 +186,7 @@ function moveLogic(bot, state, me, cols, out, dt, hz) {
       else if (goalBelow && goal.kind === 'platform') {
         // dropping onto a moving platform: wait until it is underneath
         const pl = cols.find((c) => c.kind === 'platform' && c.id === goal.id), lx = me.x + dir * 34;
-        if (!pl || lx < pl.x - 6 || lx > pl.x + pl.w + 6) dir = 0;
+        if (!pl || lx < pl.x - 6 || lx > pl.x + pl.w + 6) { dir = 0; if (!pl || Math.abs(pl.x + pl.w / 2 - me.x) > 160) bot.goalTimer = 0; }   // (a platform far away sideways is no goal from here: choose another)
       }
       // other goals below: just walk off (a deliberate drop)
     }
@@ -223,4 +224,5 @@ function moveLogic(bot, state, me, cols, out, dt, hz) {
   if (jump) bot.jumpHold = 0.3;
   bot.jumpHold = Math.max(0, bot.jumpHold - dt);
   out.jump = bot.jumpHold > 0 || jump;
+  if (out.jump && bot.prevJump && me.grounded && me.vy >= 0) out.jump = false;            // jump held while standing on the ground (blocked at a wall): let go for one tick so the next press is a fresh one
 }

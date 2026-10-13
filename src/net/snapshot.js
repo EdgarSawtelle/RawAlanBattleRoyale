@@ -9,6 +9,7 @@
 //  Snapshot slabs `sl`: [[id, x, y, w, h, hp, maxHp, life, owner], ...] (temporary blocks conjured by cards; every snapshot repeats the live ones).
 //  `ql` is how many client input frames the host has queued (the client speeds up / slows down its input clock a little to keep it near the cushion).
 //  `ack` is the sequence number of the last client input frame the host has simulated (one frame = one tick), `rt` the round tick after it.
+//  Snapshot `sq`: the client's own current shot / block stats (SQ_KEYS), for the local echo of its shots and blocks (echo.js).
 //  Snapshot bullet array: [id, x, y, vx, vy, r, owner, style]            style: 0 amber, 1 pale, 2 ember, 3 steel, 4 gold, 5 thorn
 //  Snapshot damaged-block list `bk`: [[id, hp], ...] (hp 0 = destroyed); every snapshot repeats it, so a lost
 //  message can never leave the map out of sync. Moving platforms and saws are NOT sent: their position is a
@@ -30,9 +31,16 @@ export function moveState(p) {
     p.jumpCharge, p.jumping ? 1 : 0, p.ghost, p.oobInv, p.stats.moveSpeed, p.stats.jumpVelocity, p.airLeft, p.stats.airJumps, p.stats.wallGlide];
 }
 
-export function buildSnap(state, seq, ack, mvs, ql = 0) {
+// The receiving client's CURRENT shot and block stats (timed and conditional card effects included) and its EXACT timers after the frame
+// the snapshot acknowledges, for its local echo (echo.js): SQ_KEYS values, then [reloadLeft, fireCd, blockLeft, blockCd] as full doubles
+// (the echo replays the host's arithmetic from here, so nothing may be rounded where a comparison with 0 decides a frame).
+export const SQ_KEYS = ['fireRate', 'bulletSpeed', 'bulletGravity', 'bulletRadius', 'bulletsPerShot', 'spread', 'bounces', 'recoil', 'blockWindow', 'blockCooldown', 'bulletLifetime', 'reloadTime'];
+const SQ_EXACT = new Set(['fireRate', 'blockWindow', 'blockCooldown', 'reloadTime']);
+export function shotStats(p) { return [...SQ_KEYS.map((k) => (SQ_EXACT.has(k) ? p.stats[k] : r3(p.stats[k]))), p.reloadLeft, p.fireCd, p.blockLeft, p.blockCd]; }
+
+export function buildSnap(state, seq, ack, mvs, ql = 0, extra = null) {
   return {
-    tick: state.tick, seq, ack, mvs, ql, q: moveState(state.players[1]),
+    tick: state.tick, seq, ack, mvs, ql, ...(extra || {}), q: moveState(state.players[1]), sq: shotStats(state.players[1]),
     // (ack = the last client input frame simulated; q is player 1's movement state after it)
     ph: state.phase, rd: state.round, rt: state.roundTick, rtm: r2(state.roundTime), sd: state.suddenDeath ? 1 : 0,
     sc: state.scores.slice(), res: state.result ? state.result.winner : null,
@@ -58,6 +66,8 @@ export class ClientWorld {
     this.mapId = null;
     this.baseBlocks = [];
     this.offset = null;              // host time - guest time (ms), min-delay estimate
+    this.delayMs = CONFIG.net.interpDelay * 1000;   // how far in the past we render: adapts to the measured snapshot interval and jitter
+    this.jitter = 0; this.ivMs = 0; this.prevAt = null; this.prevTick = 0; this.gaps = [];
     this.samples = [];
     this.stats = { snaps: 0, dropped: 0, lastTick: 0, extrapolated: 0 };
   }
@@ -94,12 +104,13 @@ export class ClientWorld {
     this.snaps.push({ snap, at });
     while (this.snaps.length > 40) this.snaps.shift();
     this.stats.snaps++; this.stats.lastTick = snap.tick;
+    this._adapt(snap, at, stepMs);
     const sample = snap.tick * stepMs - at;
     this.samples.push(sample); if (this.samples.length > 90) this.samples.shift();
     const target = Math.max(...this.samples);
     this.offset = this.offset === null ? target : this.offset + Math.max(-2, Math.min(2, target - this.offset));
     if (snap.map !== this.mapId) { this._loadMap(snap.map); }
-    if (snap.mvs <= this.mvVersion) {          // we know everything this snapshot's phase depends on
+    if (snap.mvs === this.mvVersion) {          // the view we hold is the one this snapshot was made under (an older snapshot overtaking a newer view must not bring its stale phase back: that froze the client in 'roundEnd' while the host asked its quiz)
       if (snap.ph === 'playing' || snap.ph === 'roundEnd') this.state.phase = snap.ph;
     }
     return true;
@@ -111,10 +122,31 @@ export class ClientWorld {
     this.baseBlocks = map.destructibles.map((d) => ({ id: d.id, kind: d.kind || 'crate', x: d.x, y: d.y, w: d.w, h: d.h, maxHp: d.hp ?? (d.kind === 'barrel' ? CONFIG.hazards.barrel.hp : 50) }));
   }
 
+  // Adaptive interpolation delay (RFC 3550 style jitter estimate): the interval between snapshots (60 or 30 Hz, the smallest recent gap)
+  // and how irregularly they arrive decide how far back we must render to always have two snapshots to blend between.
+  // It grows quickly when the link gets worse and shrinks slowly when it is steady (smooth: no visible time warp).
+  _adapt(snap, at, stepMs) {
+    const N = CONFIG.net;
+    if (this.prevAt !== null && snap.tick > this.prevTick) {
+      const gapT = (snap.tick - this.prevTick) * stepMs, d = Math.abs((at - this.prevAt) - gapT);
+      this.jitter += (d - this.jitter) / 16;
+      this.gaps.push(gapT); if (this.gaps.length > 24) this.gaps.shift();
+      this.ivMs = Math.min(...this.gaps);
+      // the margin: twice the smoothed jitter, or 3/4 of the spread between the fastest and the slowest packet of the last ~1.5 s (whichever is bigger:
+      // the mean misses the occasional late packet, the spread sees it and forgets it again after the window)
+      let lo = Infinity, hi = -Infinity; for (const s of this.samples) { if (s < lo) lo = s; if (s > hi) hi = s; }
+      const cur = snap.tick * stepMs - at, spread = Math.max(hi, cur) - Math.min(lo, cur);
+      const target = Math.max(N.interpMin * 1000, Math.min(N.interpMax * 1000, this.ivMs * 1.5 + Math.max(this.jitter * 2, spread * 0.75) + 4));
+      this.targetMs = target;
+      this.delayMs += target > this.delayMs ? Math.min(4, target - this.delayMs) : Math.max(-0.25, target - this.delayMs);
+    }
+    this.prevAt = at; this.prevTick = snap.tick;
+  }
+
   // Estimated host tick (fractional) at local time `now`, minus the interpolation delay.
   renderTick(now, stepMs) {
     if (this.offset === null) return 0;
-    return (now + this.offset) / stepMs - CONFIG.net.interpDelay * 1000 / stepMs;
+    return (now + this.offset) / stepMs - this.delayMs / stepMs;
   }
 
   // The blocks (destructible) as of the NEWEST snapshot, for the client's own movement prediction.

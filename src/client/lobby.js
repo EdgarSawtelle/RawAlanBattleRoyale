@@ -6,6 +6,8 @@
 import { CONFIG } from '../config.js';
 import { pxSVG } from './px.js';
 import { normaliseCode, cleanName } from '../net/room-code.js';
+import { runConnectionTest } from '../net/diagnose.js';
+import { probeBroker } from '../net/peer-transport.js';
 
 const NAME_KEY = 'rab-name';
 function storedName() { try { return localStorage.getItem(NAME_KEY) || ''; } catch (e) { return ''; } }
@@ -44,8 +46,13 @@ export function createLobby(root, handlers) {
           <div class="lb-col"><div class="lb-h">${pxSVG('HOST A GAME', 2)}</div><button class="lb-btn lb-go" id="lb-create">${pxSVG('CREATE ROOM', 3)}</button><div class="lb-small">You get a short code to give your friend.</div></div>
           <div class="lb-col"><div class="lb-h">${pxSVG('JOIN A FRIEND', 2)}</div><input id="lb-code" class="lb-code-in" maxlength="9" placeholder="ROOM CODE" autocomplete="off" spellcheck="false"><button class="lb-btn" id="lb-join">${pxSVG('JOIN ROOM', 3)}</button></div>
         </div>
-        <button class="lb-btn lb-dim" id="lb-practice">${pxSVG('PRACTICE VS DUMMY', 2)}</button>
+        <div class="lb-btns"><button class="lb-btn lb-dim" id="lb-practice">${pxSVG('PRACTICE VS DUMMY', 2)}</button><button class="lb-btn lb-dim" id="lb-test">${pxSVG('CONNECTION TEST', 2)}</button></div>
         ${msg()}${controls}`;
+    } else if (view.kind === 'test') {
+      const mark = (l) => (l.ok ? '[ok]' : '[!!]');
+      const rows = view.lines.map((l) => `<div class="lb-msg ${l.ok ? 'lb-info' : 'lb-err'}">${esc(mark(l) + ' ' + l.text)}</div>`).join('');
+      const res = view.result ? `<div class="lb-msg ${view.result.verdict.level === 'good' ? 'lb-info' : 'lb-err'}"><b>${esc(view.result.verdict.headline)}</b><br>${esc(view.result.verdict.advice)}</div>` : `<div class="lb-wait">${pxSVG('TESTING', 3)}<span class="lb-dots"></span></div>`;
+      body = `<div class="lb-h">${pxSVG('CONNECTION TEST', 3)}</div>${rows}${res}<div class="lb-btns">${view.result ? `<button class="lb-btn" id="lb-copytest">${pxSVG('COPY RESULT', 2)}</button>` : ''}<button class="lb-btn lb-dim" id="lb-cancel">${pxSVG('BACK', 2)}</button></div>`;
     } else if (view.kind === 'creating') {
       body = `<div class="lb-h">${pxSVG('OPENING ROOM...', 3)}</div>${msg()}<button class="lb-btn lb-dim" id="lb-cancel">${pxSVG('CANCEL', 2)}</button>`;
     } else if (view.kind === 'waiting') {
@@ -69,6 +76,8 @@ export function createLobby(root, handlers) {
     const nm = () => { const el = $('lb-name'); name = cleanName(el ? el.value : name, ''); storeName(name); return name; };
     if ($('lb-create')) $('lb-create').onclick = () => handlers.onCreate(nm());
     if ($('lb-practice')) $('lb-practice').onclick = () => handlers.onPractice();
+    if ($('lb-test')) $('lb-test').onclick = () => startTest();
+    if ($('lb-copytest')) $('lb-copytest').onclick = async (e) => { const btn = e.currentTarget; const ok = await copyText(view.result.report); flash(btn, ok ? 'COPIED!' : 'COPY FAILED'); };
     if ($('lb-join')) {
       const go = () => { const c = normaliseCode($('lb-code').value); if (c.length !== CONFIG.net.codeLength) { view.error = 'Type the ' + CONFIG.net.codeLength + '-character room code your friend gave you.'; render(); return; } handlers.onJoin(c, nm()); };
       $('lb-join').onclick = go;
@@ -77,9 +86,14 @@ export function createLobby(root, handlers) {
       if (view.focusCode) { $('lb-code').focus(); }
     }
     if ($('lb-name')) $('lb-name').onkeydown = (e) => { if (e.key === 'Enter') handlers.onCreate(nm()); };
-    if ($('lb-cancel')) $('lb-cancel').onclick = () => handlers.onCancel();
+    if ($('lb-cancel')) $('lb-cancel').onclick = () => { if (view.kind === 'test') { view = { kind: 'menu', code: '', invite: '', error: '', status: '' }; render(); } else handlers.onCancel(); };
     if ($('lb-copycode')) $('lb-copycode').onclick = async (e) => { const btn = e.currentTarget; const ok = await copyText(view.code); flash(btn, ok ? 'COPIED!' : 'COPY FAILED'); };
     if ($('lb-copylink')) $('lb-copylink').onclick = async (e) => { const btn = e.currentTarget; const ok = await copyText(view.invite); flash(btn, ok ? 'LINK COPIED!' : 'COPY FAILED'); };
+  }
+  // The simple connection test: which step fails on this network, in plain words (net/diagnose.js).
+  function startTest() {
+    const mine = { kind: 'test', lines: [], result: null }; view = mine; render();
+    runConnectionTest({ probeBroker, onStep: (l) => { if (view === mine) { mine.lines.push(l); render(); } } }).then((r) => { if (view === mine) { mine.result = r; render(); } });
   }
   function flash(btn, text) { const old = btn.innerHTML; btn.innerHTML = pxSVG(text, 2); setTimeout(() => { btn.innerHTML = old; }, 1400); }
 

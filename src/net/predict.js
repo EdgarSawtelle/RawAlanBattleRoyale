@@ -13,6 +13,10 @@
 //      moved into a visual `offset` that fades out over a few frames (config.net.predictSmooth).
 //      A correction larger than config.net.predictSnap (teleport, out of bounds, round restart) is applied at once
 //
+//  A shot's RECOIL (the Kickback card pushes you back opposite to the aim) is part of the movement: the local echo (echo.js) works
+//  out on the client that this frame fires and passes the velocity change in `kick`; it is applied before the step exactly where the
+//  host applies it (sim/player.js fire), and kept in the history so a replay repeats it.
+//
 //  Only MOVEMENT is predicted (position, velocity, grounded / wall state, jump charge and timers).
 //  Damage, death, bullets, hazards, knockback and card effects stay the host's business: they arrive in
 //  the next snapshot and the reconciliation moves you to where they put you. Moving platforms are a pure
@@ -56,14 +60,16 @@ export class Predictor {
   _colliders(ctx, rt) { return collidersFor(ctx.mapId, rt, ctx.blocks); }
 
   // One sampled input frame: remember it and, when predicting, move the player. `at` = local time of this tick (ms).
-  tick(seq, inp, ctx, at) {
-    this.hist.push({ seq, inp: { left: !!inp.left, right: !!inp.right, jump: !!inp.jump, jumpPressed: !!inp.jumpPressed } });
+  // `kick` = [dvx, dvy] recoil of a shot this frame fires (optional).
+  tick(seq, inp, ctx, at, kick = null) {
+    this.hist.push({ seq, kick, inp: { left: !!inp.left, right: !!inp.right, jump: !!inp.jump, jumpPressed: !!inp.jumpPressed } });
     if (this.hist.length > 240) this.hist.splice(0, this.hist.length - 240);
     this.stepAt = at;
     if (!this.active || !this.p) return;
     if (this.frozen) { this.stats.frozenTicks++; return; }
     if (seq - this.ackSeq > CONFIG.net.predictMaxPending) return;          // the link is dead: stand still instead of running away
     this.prevX = this.p.x; this.prevY = this.p.y;
+    if (kick) { this.p.vx += kick[0]; this.p.vy += kick[1]; }
     stepMotion(this.p, this.hist[this.hist.length - 1].inp, this._colliders(ctx, this.ackRt + (seq - this.ackSeq)), STEP);
     this.stats.steps++;
     if (isOutOfBounds(this.p) && this.p.oobInv <= 0) this.frozen = true;  // the host will throw us back: wait for it
@@ -80,6 +86,7 @@ export class Predictor {
     const body = copyBody(auth); let frozen = false;
     for (const h of this.hist) {
       if (h.seq - s.ack > CONFIG.net.predictMaxPending) break;
+      if (h.kick) { body.vx += h.kick[0]; body.vy += h.kick[1]; }
       stepMotion(body, h.inp, this._colliders(ctx, s.rt + (h.seq - s.ack)), STEP);
       if (isOutOfBounds(body) && body.oobInv <= 0) { frozen = true; break; }
     }

@@ -28,8 +28,8 @@ school networks), try a phone hotspot: the game uses WebRTC without a relay serv
 | **Esc** | help and menu |
 | **\` / F1 / F2** | debug panel (map, cards, cheats; cheats work for the host only) |
 
-Falling off the sides or the bottom costs health and throws you back in; the top of the screen is free. Four maps
-rotate (a new one every round, all four before any repeat).
+Falling off the sides or the bottom costs 15% of your health and throws you back in; the top of the screen is free. Thirty maps
+rotate (a new one every round, all of them before any repeat).
 
 ## Run it locally
 

@@ -9,9 +9,11 @@ import { getMap } from '../maps/index.js';
 import { platformPos } from '../sim/platforms.js';
 import { shieldRadius } from '../sim/bullet.js';
 import { getHazards } from '../sim/hazards.js';
-import { W, H, K, L, use, ctx, P, R, LN, LNf, DISC, ELL, ELLpx, DITH, hash } from './px.js';
+import { W, H, K, L, use, ctx, P, R, LN, LNf, DISC, ELL, ELLpx, DITH, hash, bay } from './px.js';
 import { getBackground, getBackgroundFade } from './background.js';
-import { fxDraw } from './fx.js';
+import { fxDraw, fxDust } from './fx.js';
+import { animUpdate, deathPose, wallContact, NEUTRAL_POSE } from './anim.js';
+import { collidersFor } from '../sim/world.js';
 import { CARDS_BY_ID } from '../cards.js';
 import { computeStats } from '../sim/cardfx.js';
 
@@ -246,27 +248,57 @@ function drawAimPreview(state, map, p, q) {
 }
 
 // ---- survivors ------------------------------------------------------------------------------------------------------------------------------
+// The body is drawn at the deformed size (squash / stretch from anim.js: radii rx, ry) into a small off-screen sprite, then
+// copied to the canvas with whole-pixel offsets: row by row for the lean (a shear), or nearest-neighbour rotated while it tumbles.
+// The gun, the paws and the wall scrape are drawn on the canvas afterwards, so the aim direction always stays clear.
 const P_SCALE = 1.0;   // drawn size relative to the hitbox
-function drawSurvivor(kind, p, x, y, flash, bobFrame) {
-  const g = ctx(), c = PC[kind], f = Math.cos(p.aim) >= 0 ? 1 : -1;
-  const cx = L(x), bottomEx = L(y + p.h / 2), Hh = L(p.h * P_SCALE / 2), cy0 = bottomEx - Hh;
-  const feet = 1;
-  const rx = Math.floor(p.w * P_SCALE / K / 2);
-  const T0 = cy0 - Hh + 1, B0 = bottomEx - feet - 1, cy = (T0 + B0) / 2 - (bobFrame ? 1 : 0), ry = (B0 - T0) / 2;
-  const big = rx >= 8, mid = rx >= 5;
-  // backpack / bag on the back
+const SPR_W = 96, SPR_H = 96, SPR_CX = 48, SPR_BASE = 78;
+let sprC = null, sprG = null;
+const clampN = (v, a, b) => (v < a ? a : v > b ? b : v);
+
+// An arm: a dark outline with a body-coloured core.
+function armLine(c, x0, y0, x1, y1) { LN(x0, y0, x1, y1, c.ink, 3); LN(x0, y0, x1, y1, c.lo, 1); }
+// Paws: little hands in the body colour with a dark outline.
+function drawPaw(c, x, y, small) {
+  if (small) { R(x - 1, y - 1, 3, 3, c.ink); P(x, y, c.hi); return; }
+  R(x - 1, y - 1, 4, 4, c.ink); R(x, y, 2, 2, c.hi); P(x + 1, y + 1, c.base);
+}
+
+export function drawSurvivor(kind, p, x, y, flash, pose) {   // (exported for the pose sheet: tests/poses.html)
+  const main = ctx(), c = PC[kind], f = Math.cos(p.aim) >= 0 ? 1 : -1;
+  if (!sprC) { sprC = newCanvas(SPR_W, SPR_H); sprG = sprC.getContext('2d'); }
+  sprG.clearRect(0, 0, SPR_W, SPR_H);
+  const feet = 1, Hh = L(p.h * P_SCALE / 2), rx0 = Math.floor(p.w * P_SCALE / K / 2), ry0 = Hh - 1.5;
+  const rx = Math.max(2, rx0 * pose.sw), ry = Math.max(2.5, ry0 * pose.sh);
+  const lift = Math.round(pose.lift), bodyLift = lift + (pose.oldBob ? 1 : 0);
+  const cx = SPR_CX, bt = SPR_BASE - lift, B0 = SPR_BASE - feet - 1 - bodyLift, cy = B0 - ry;     // bt: where the boots stand
+  const big = rx0 >= 8, mid = rx0 >= 5;
+  use(sprG);
+  const g = ctx();
+  const lagx = pose.lagx, lagy = pose.lagy;
+  // backpack / bag on the back (trails behind the movement)
   if (kind === 0) {
-    const bw = big ? 4 : mid ? 3 : 2, bx = f > 0 ? cx - rx - bw + 1 : cx + rx, by0 = Math.round(cy - ry * 0.25), bh = Math.round(ry * 1.1);
+    const bw = big ? 4 : mid ? 3 : 2, bx = Math.round(f > 0 ? cx - rx - bw + 1 : cx + rx) + Math.round(lagx * 0.6), by0 = Math.round(cy - ry * 0.25) + Math.round(lagy * 0.6), bh = Math.round(ry * 1.1);
     R(bx - 1, by0 - 1, bw + 2, bh + 2, c.ink); R(bx, by0, bw, bh, c.leather); R(bx, by0, bw, 1, c.patch); if (bw >= 3) P(bx + (f > 0 ? 0 : bw - 1), by0 + bh - 1, c.acc);
   } else {
-    const bw = big ? 4 : mid ? 3 : 2, bx = f > 0 ? cx - rx - bw + 1 : cx + rx, by0 = Math.round(cy - ry * 0.5), bh = big ? 5 : 3;
+    const bw = big ? 4 : mid ? 3 : 2, bx = Math.round(f > 0 ? cx - rx - bw + 1 : cx + rx) + Math.round(lagx * 0.6), by0 = Math.round(cy - ry * 0.5) + Math.round(lagy * 0.6), bh = big ? 5 : 3;
     R(bx - 1, by0 - 1, bw + 2, bh + 2, c.ink); R(bx, by0, bw, bh, c.patch); P(bx, by0, c.acc2);
   }
   // boots
-  const bwid = Math.max(2, Math.round(rx * 0.6));
-  const bootX = (sx) => cx + sx * Math.round(rx * 0.45) - (sx < 0 ? bwid - 1 : 0);
-  for (const sx of [-1, 1]) R(bootX(sx) - 1, bottomEx - feet - 1, bwid + 2, feet + 2, c.ink);
-  for (const sx of [-1, 1]) { R(bootX(sx), bottomEx - feet, bwid, feet, '#2d241d'); }
+  const bwid = Math.max(2, Math.round(rx0 * 0.6));
+  const bootXs = [0, 0], bootYs = [bt - feet, bt - feet];
+  if (pose.grip > 0.5) {                                          // braced against the wall: both feet on the wall side, one above the other
+    const s = pose.side, near = s > 0 ? cx + Math.round(rx) - bwid + 1 : cx - Math.round(rx), far = s > 0 ? near - bwid - 1 : near + bwid + 1;
+    bootXs[0] = far; bootXs[1] = near; bootYs[0] -= 1;
+  } else {
+    for (let i = 0; i < 2; i++) {
+      const sx = i === 0 ? -1 : 1;
+      bootXs[i] = cx + sx * Math.round(rx * pose.footSpread) - (sx < 0 ? bwid - 1 : 0) + pose.footShift[i];
+      bootYs[i] -= pose.foot[i];
+    }
+  }
+  for (let i = 0; i < 2; i++) R(bootXs[i] - 1, bootYs[i] - 1, bwid + 2, feet + 2, c.ink);
+  for (let i = 0; i < 2; i++) R(bootXs[i], bootYs[i], bwid, feet, '#2d241d');
   // body
   ELL(cx, cy, rx + 1, ry + 1, c.ink);
   ELLpx(cx, cy, rx, ry, (px, py, nx, ny) => {
@@ -274,40 +306,100 @@ function drawSurvivor(kind, p, x, y, flash, bobFrame) {
     if (kind === 1 && ny < -0.1) col = ny > -0.25 ? c.hoodHi : c.hood;
     g.fillStyle = col; g.fillRect(px, py, 1, 1);
   });
-  for (let i = -rx; i <= rx; i += 2) { if (Math.abs(i) < rx * 0.9) P(cx + i, Math.round(cy + ry), c.lo); }
+  for (let i = -Math.floor(rx); i <= rx; i += 2) { if (Math.abs(i) < rx * 0.9) P(cx + i, Math.round(cy + ry), c.lo); }
   if (kind === 0) {   // ember: scarf + goggles
     const sy = Math.round(cy - ry * 0.2), st = Math.max(1, Math.round(ry * 0.22));
     ELLpx(cx, cy, rx, ry, (px, py) => { if (py >= sy && py < sy + st) { g.fillStyle = (py === sy) ? c.acc2 : c.acc; g.fillRect(px, py, 1, 1); } });
-    const tl = Math.max(2, Math.round(ry * 0.6)), tx = f > 0 ? cx - rx + 1 : cx + rx - 1 - (big ? 1 : 0);
-    R(tx, sy + st, big ? 2 : 1, tl, c.acc); P(tx, sy + st + tl - 1, c.lo);
+    const tl = Math.max(1, Math.max(2, Math.round(ry0 * 0.6)) + Math.round(lagy * 0.7)), tx = Math.round(f > 0 ? cx - rx + 1 : cx + rx - 1 - (big ? 1 : 0));
+    for (let j = 0; j < tl; j++) { const ox = Math.round(lagx * 1.4 * (j + 1) / tl); R(tx + ox, sy + st + j, big ? 2 : 1, 1, j === tl - 1 ? c.lo : c.acc); }   // the scarf tail flutters behind the movement
     const gy = Math.round(cy - ry * 0.55);
     ELLpx(cx, cy, rx, ry, (px, py) => { if (py === gy) { g.fillStyle = c.leather; g.fillRect(px, py, 1, 1); } });
-    const ls = big ? 3 : mid ? 2 : 1, lh = big ? 3 : 2;
+    const ls = big ? 3 : mid ? 2 : 1, lh = big ? 3 : 2, gl = gy + pose.look;                  // the goggles glance up / down with the aim
     for (const o of [0.12, 0.62]) {
       const lx = Math.round(cx + f * rx * o) - (f < 0 ? ls - 1 : 0);
-      R(lx - 1, gy - 1, ls + 2, lh + 2, c.ink); R(lx, gy, ls, lh, c.lens);
+      R(lx - 1, gl - 1, ls + 2, lh + 2, c.ink); R(lx, gl, ls, lh, pose.blink ? c.leather : c.lens);
     }
   } else {            // tide: hood + gas-mask filter
-    const fx = Math.round(cx + f * rx * 0.35), fy = Math.round(cy - ry * 0.38), frx = Math.max(2, Math.round(rx * 0.42)), fry = Math.max(1, Math.round(ry * 0.28));
-    ELL(fx, fy, frx, fry, '#0d1212');
-    const ex = Math.round(fx + f * frx * 0.25); P(ex, fy, c.lens); if (mid) P(ex - f, fy, c.lens); if (big) { P(ex, fy - 1, c.lens); P(ex - f, fy - 1, c.lens); }
-    const fw = big ? 3 : 2, fh = big ? 4 : 3, fcx = f > 0 ? fx + frx : fx - frx - fw + 1, fcy = fy + fry - 1;
+    const fx_ = Math.round(cx + f * rx * 0.35), fy = Math.round(cy - ry * 0.38), frx = Math.max(2, Math.round(rx * 0.42)), fry = Math.max(1, Math.round(ry * 0.28));
+    ELL(fx_, fy, frx, fry, '#0d1212');
+    if (!pose.blink) {
+      const ex = Math.round(fx_ + f * frx * 0.25), ey = fy + (fry >= 2 || pose.look >= 0 ? pose.look : 0);
+      P(ex, ey, c.lens); if (mid) P(ex - f, ey, c.lens); if (big) { P(ex, ey - 1, c.lens); P(ex - f, ey - 1, c.lens); }
+    }
+    const fw = big ? 3 : 2, fh = big ? 4 : 3, fcx = f > 0 ? fx_ + frx : fx_ - frx - fw + 1, fcy = fy + fry - 1;
     R(fcx - 1, fcy - 1, fw + 2, fh + 2, c.ink); R(fcx, fcy, fw, fh, c.filter); P(fcx + (f > 0 ? 0 : fw - 1), fcy, '#b4b9b0'); R(fcx, fcy + fh - 1, fw, 1, '#4b4f4a');
     const by = Math.round(cy + ry * 0.3); ELLpx(cx, cy, rx, ry, (px, py) => { if (py === by) { g.fillStyle = c.acc; g.fillRect(px, py, 1, 1); } });
-    const pw = big ? 4 : mid ? 3 : 2, px = f > 0 ? cx - Math.round(rx * 0.2) - pw : cx + Math.round(rx * 0.2) + 1, py = Math.round(cy + ry * 0.45);
+    const pw = big ? 4 : mid ? 3 : 2, px = Math.round(f > 0 ? cx - rx * 0.2 - pw : cx + rx * 0.2 + 1), py = Math.round(cy + ry * 0.45);
     R(px, py, pw, pw > 2 ? 3 : 2, c.acc); P(px, py, c.acc2);
   }
   // hit flash: a pale dither over the body
-  if (flash > 0) { ELLpx(cx, cy, rx, ry, (px, py) => { if (((px + py) & 1) === 0) P(px, py, '#f4ecd0'); }); }
-  // gun, always pointing along the aim direction
-  const hx = Math.round(cx + f * rx * 0.25), hy = Math.round(cy + ry * 0.3), dx = Math.cos(p.aim), dy = Math.sin(p.aim);
-  const glen = rx + 6, tipx = hx + dx * glen, tipy = hy + dy * glen;
-  LN(hx - dx * 3, hy - dy * 3, hx, hy, c.wood, 2);
-  LN(hx, hy, tipx, tipy, c.ink, 3);
-  LN(hx, hy, tipx, tipy, c.metal, 1);
-  LNf(hx, hy, tipx, tipy, (px, py, i) => { if (i % 3 === 1) P(px, py, c.metalHi); });
+  if (flash > 0 || pose.flash) { ELLpx(cx, cy, rx, ry, (px, py) => { if (((px + py) & 1) === 0) P(px, py, '#f4ecd0'); }); }
+  // death pop: the body dithers away
+  if (pose.fade > 0) {
+    sprG.globalCompositeOperation = 'destination-out'; sprG.fillStyle = '#000';
+    const lvl = Math.round(pose.fade * 16);
+    for (let yy = 0; yy < SPR_H; yy++) for (let xx = 0; xx < SPR_W; xx++) if (bay(xx, yy) < lvl) sprG.fillRect(xx, yy, 1, 1);
+    sprG.globalCompositeOperation = 'source-over';
+  }
+  use(main);
+
+  // ---- onto the canvas ----
+  const cyI = Math.round(cy);
+  const cxM = L(x) + Math.round(pose.px) + (pose.grip > 0.3 ? Math.round(pose.side * rx0 * (1 - pose.sw)) : 0), baseM = L(y + p.h / 2) + Math.round(pose.py);
+  const X0 = cxM - SPR_CX, Y0 = baseM - SPR_BASE, B0m = Y0 + B0;
+  const leanPx = pose.lean;
+  const shearAt = (ym) => Math.round(leanPx * clampN((B0m - ym) / (2 * ry), 0, 1.15));
+  const rot = pose.rot ? Math.round(pose.rot / (Math.PI / 8)) * (Math.PI / 8) : 0;
+  if (rot) {
+    main.save(); main.imageSmoothingEnabled = false; main.translate(X0 + SPR_CX, Y0 + cyI); main.rotate(rot); main.drawImage(sprC, -SPR_CX, -cyI); main.restore();
+  } else if (Math.abs(leanPx) < 0.5) main.drawImage(sprC, X0, Y0);
+  else {
+    const yTop = Math.max(0, Math.floor(B0 - 2 * ry - 4)), yBot = SPR_BASE + 2;
+    let y0 = yTop, off0 = shearAt(Y0 + yTop);
+    for (let yy = yTop + 1; yy <= yBot; yy++) {
+      const off = yy < yBot ? shearAt(Y0 + yy) : NaN;
+      if (off !== off0) { main.drawImage(sprC, 0, y0, SPR_W, yy - y0, X0 + off0, Y0 + y0, SPR_W, yy - y0); y0 = yy; off0 = off; }
+    }
+  }
+  // a point of the sprite (sprite coordinates) as it appears on the canvas (shear / rotation applied)
+  const toMain = (sx, sy) => {
+    if (rot) { const dx = sx - SPR_CX, dy = sy - cyI, cs = Math.cos(rot), sn = Math.sin(rot); return [Math.round(X0 + SPR_CX + dx * cs - dy * sn), Math.round(Y0 + cyI + dx * sn + dy * cs)]; }
+    const ym = Y0 + sy; return [X0 + sx + shearAt(ym), ym];
+  };
+  const small = rx0 < 5;
+  // paws
+  if (pose.hands !== 'none' && !rot) {
+    const sideX = (s, e) => cx + s * (Math.round(rx) + e);                                // sprite x of the body edge (+e outside)
+    const arm = (sx0, sy0, hx, hy) => { const [ax, ay] = toMain(sx0, sy0); armLine(c, ax, ay, hx, hy); };
+    if (pose.hands === 'wall') {
+      const s = pose.side, px0 = pose.wallPx - 1, up = pose.cling ? 4 : 2, slip = pose.glide ? (pose.scrapeY & 1) : 0;
+      const h1 = [px0, Y0 + Math.round(cy - ry * (pose.cling ? 0.55 : 0.15))], h2 = [px0, Y0 + Math.round(cy - ry - up) + slip];
+      const [ex, ey] = toMain(sideX(s, 0), Math.round(cy - ry * 0.2)), [ex2, ey2] = toMain(sideX(s, 0), Math.round(cy - ry * 0.7));
+      armLine(c, ex, ey, h1[0] + (s > 0 ? 0 : 1), h1[1]); armLine(c, ex2, ey2, h2[0] + (s > 0 ? 0 : 1), h2[1] + 1);
+      drawPaw(c, h1[0], h1[1], small); drawPaw(c, h2[0], h2[1], small);
+      if (pose.glide) {                                                              // the scrape: friction marks on the wall behind the sliding paws
+        const col = s > 0 ? pose.wallPx : pose.wallPx - 1;
+        for (let j = 3; j < 10; j++) if (((j + pose.scrapeY) & 1) === 0) P(col, h2[1] - j, j < 6 ? '#aeb2a2' : '#6a7066');
+      }
+    } else if (pose.hands === 'up') {
+      for (const s of [-1, 1]) { const [hx, hy] = toMain(sideX(s, 1) - (s < 0 ? 1 : 0), Math.round(cy - ry * 0.85) - 1); arm(sideX(s, -1), Math.round(cy - ry * 0.1), hx, hy); drawPaw(c, hx, hy, small); }
+    } else if (pose.hands === 'out') {
+      for (const s of [-1, 1]) { const [hx, hy] = toMain(sideX(s, 2) - (s < 0 ? 1 : 0), Math.round(cy - ry * 0.2)); arm(sideX(s, -1), Math.round(cy + ry * 0.05), hx, hy); drawPaw(c, hx, hy, small); }
+    } else if (pose.hands === 'brace') {
+      for (const dy of [-0.15, 0.45]) { const [hx, hy] = toMain(sideX(f, 1) - (f < 0 ? 1 : 0), Math.round(cy + ry * dy)); drawPaw(c, hx, hy, small); }
+    }
+  }
+  if (pose.fade > 0.35) return;                                   // (the death pop takes the gun with it)
+  // gun, always pointing along the aim direction (it slides back a little on a shot)
+  const [hx, hy] = toMain(Math.round(cx + f * rx * 0.25), Math.round(cy + ry * 0.3)), dx = Math.cos(p.aim), dy = Math.sin(p.aim);
+  const kx = hx - dx * pose.kick, ky = hy - dy * pose.kick;
+  const glen = rx0 + 6, tipx = kx + dx * glen, tipy = ky + dy * glen;
+  LN(kx - dx * 3, ky - dy * 3, kx, ky, c.wood, 2);
+  LN(kx, ky, tipx, tipy, c.ink, 3);
+  LN(kx, ky, tipx, tipy, c.metal, 1);
+  LNf(kx, ky, tipx, tipy, (px, py, i) => { if (i % 3 === 1) P(px, py, c.metalHi); });
   P(Math.round(tipx), Math.round(tipy), c.metalHi);
-  R(hx - 1, hy - 1, 2, 2, c.leather);
+  R(Math.round(kx) - 1, Math.round(ky) - 1, 2, 2, c.leather);
 }
 
 // Block shield: a bubble around the body with a brighter front arc facing the aim.
@@ -393,12 +485,32 @@ export function createRenderer(canvas) {
       return { x: lerpPos(pp && pp.x, p.x, alpha), y: lerpPos(pp && pp.y, p.y, alpha) };
     });
     const arrows = [];
+    // character animation: advance the springs by the sim time that passed (fx.time stops when the game is paused), then draw
+    const AC = CONFIG.render.animations, A = fx.anim;
+    if (!AC.enabled) { A.time = fx.time; for (const a of A.players) a.init = false; }       // (so switching them back on starts clean)
+    else {
+      const dtA = fx.time - A.time; A.time = fx.time;
+      let cols = null;
+      state.players.forEach((p, i) => {
+        const q = pos[i];
+        const wc = p.alive && !p.grounded ? wallContact(q.x, q.y, p.w, p.h, cols || (cols = collidersFor(state.mapId, state.roundTick, state.blocks))) : null;
+        const victory = state.phase === 'roundEnd' && state.result && state.result.winner === i;
+        animUpdate(A.players[i], { x: q.x, y: q.y, w: p.w, h: p.h, vx: p.vx, vy: p.vy, grounded: p.grounded, wall: wc ? wc.side : 0, wallEdge: wc ? L(wc.edge) : undefined,
+          aim: p.aim, alive: p.alive, blockLeft: p.blockLeft, limpet: !!p.cards && p.cards.includes('limpet'), victory: !!victory }, dtA);
+        if (A.players[i].dust.length) fxDust(fx, A.players[i].dust);
+      });
+    }
     state.players.forEach((p, i) => {
-      if (!p.alive) return;
+      if (!p.alive) {                                                            // the death pop
+        const dp = AC.enabled ? deathPose(A.players[i]) : null, last = A.players[i].last;
+        if (dp && last) drawSurvivor(i, { w: last.w, h: last.h, aim: last.aim }, last.x, last.y, 1, dp);
+        return;
+      }
       const q = pos[i];
       if (q.y + p.h / 2 < 0) arrows.push({ i, x: q.x });                       // above the top edge: show an arrow instead
-      const moving = p.grounded && Math.abs(p.vx) > 40;
-      drawSurvivor(i, p, q.x, q.y, fx.flash[i], moving && (Math.floor(fx.time * 12) & 1));
+      let pose = AC.enabled ? A.players[i].pose : null;
+      if (!pose) { const moving = p.grounded && Math.abs(p.vx) > 40; pose = { ...NEUTRAL_POSE, oldBob: !!(moving && (Math.floor(fx.time * 12) & 1)) }; }   // animations off: the rigid sprite with its 1 px step bob
+      drawSurvivor(i, p, q.x, q.y, fx.flash[i], pose);
       if (p.blockLeft > 0) drawShield(p, q.x, q.y, p.blockLeft);
     });
 

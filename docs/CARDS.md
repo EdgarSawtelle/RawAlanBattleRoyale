@@ -110,7 +110,7 @@ Format: effect with final numbers, hooks / machinery, combos (at least two), cou
 
 **2. Pinball** - *Bullets bounce four times and hit harder every time, you included.* +4 bounces, damage x0.75 (15), lifetime +1 s; every bounce adds +30% of the launch damage (+60% with two). Hook `onShoot` (pale bullets), `onBounce`. Combos: Prism Shot (more bounces for the children), Bricklayer (a slab is a surface), Trebuchet (steep arcs land and bounce). Counters: any block (bounced bullets are destroyed), Anchor. Risks: self-hits (owner immunity ends at the first bounce). Stacks: 2 (6-bounce cap).
 
-**3. Thick Skin** - *Twice the health, a bigger target, and a long fall.* Max HP x2 (200), size +30%, speed -25%. A fall costs 60 HP. Combos: Tithe, Porcupine, Late Bloomer. Counters: Powder Keg and Demo Permit (big target), Wrecking Ball (a big out-of-bounds bill). Stacks: 2 (HP cap 250, size cap 1.6). Sudden death bleeds a fraction of MAX HP, so the extra HP is a buffer, not a win condition.
+**3. Thick Skin** - *Twice the health, a bigger target, and a long fall.* Max HP x2 (200), size +30%, speed -25%. A fall costs 30 HP (15% of 200). Combos: Tithe, Porcupine, Late Bloomer. Counters: Powder Keg and Demo Permit (big target), Wrecking Ball (a big out-of-bounds bill). Stacks: 2 (HP cap 250, size cap 1.6). Sudden death bleeds a fraction of MAX HP, so the extra HP is a buffer, not a win condition.
 
 **4. Tight Guard** - *Block whenever you like, but only for a heartbeat.* Block cooldown x0.25 (1 s), window x0.5 (0.15 s). Stats only. Combos: Return Policy (the parry build), Sleight of Hand (refill every parry), Bricklayer. Counters: explosions, Needle Rounds.
 
@@ -168,7 +168,7 @@ Format: effect with final numbers, hooks / machinery, combos (at least two), cou
 
 **29. Last Call** - *Your last bullet is a cannonball.* Reload x1.25. `onShoot` when the shot empties the magazine: damage x2 (40 cap), size x2.5, speed x1.3, knockback x2.5 (gold bullet). Combos: Needle Rounds (two-round clip: every second shot), Powder Keg (the big shot is a big blast), Wrecking Ball. Counters: the tell (a gold bullet is easy to see and block), Anchor.
 
-**30. Gravedigger** *(new design)* - *Whoever you knock out of the arena pays extra, and you feel better for it.* Knockback x1.5, damage x0.85. Hook `onRingOut` (a player thrown out within 3 s of YOUR hit): the victim takes +12 (through the caps) on top of the 30% fall, you heal 25. Combos: Wrecking Ball, Kickback, Pepperpot (a point-blank shove). Counters: Anchor, Cloudstep, Bricklayer slabs; no ring-outs on a map where nobody falls. The 2 s out-of-bounds immunity bounds it to one ring-out per 2 s.
+**30. Gravedigger** *(new design)* - *Whoever you knock out of the arena pays extra, and you feel better for it.* Knockback x1.5, damage x0.85. Hook `onRingOut` (a player thrown out within 3 s of YOUR hit): the victim takes +12 (through the caps) on top of the 15% fall, you heal 25. Combos: Wrecking Ball, Kickback, Pepperpot (a point-blank shove). Counters: Anchor, Cloudstep, Bricklayer slabs; no ring-outs on a map where nobody falls. The 2 s out-of-bounds immunity bounds it to one ring-out per 2 s.
 
 ## 5. The nastiest stacks and how they are contained
 
@@ -189,7 +189,7 @@ Format: effect with final numbers, hooks / machinery, combos (at least two), cou
 - **Stat limits** (`config.statLimits`): damage 8-40, fire rate 1-8, ammo 1-12, reload 0.8-4 s, bullet speed 750-3750, bullet size 3-18, bullet drop 0-4000, lifetime 0.3-5 s, pellets 1-6, spread 0-20 deg, bounces 0-6, knockback 65-780, knockback taken 0.2-2.5, recoil 0-600, max HP 60-250, move speed 180-600, jump 462-924, size 0.6-1.6, block cooldown 1-10 s, window 0.15-0.8 s, **air jumps 0-3, wall glide 0-1, hazard taken 0-1, block damage 1-4**.
 - **Derived caps:** burst `fireRate x damage x pellets <= 130`, magazine budget `ammo x pellets x damage <= 240`, per hit 40, per trigger pull per target 60, healing 70 per round, live bullets per player 60, a hit or blast pushes at most 700 u/s, **no body ever moves faster than 1100 u/s** (`move.maxSpeed`).
 - **Self-damage is on:** a bullet cannot hurt its owner for 0.15 s or until its first bounce; explosions hurt everyone in range (unless a card spares its owner).
-- **Out of bounds:** 30% of max HP, thrown back with 1.5 s of immunity (the top is free). A fall within 3 s of a hit counts as that player's ring-out (`onRingOut`).
+- **Out of bounds:** 15% of max HP (was 30%, halved after playtests), thrown back with 1.5 s of immunity (the top is free). A fall within 3 s of a hit counts as that player's ring-out (`onRingOut`).
 - **Sudden death:** after 45 s both players bleed 2% of their max HP per second.
 - **Hard bans:** no stun, slow, blind, invisibility, silence, unavoidable damage, one-shot kill, no effect that punishes the opponent's quiz or pick.
 
@@ -211,5 +211,5 @@ Thick Skin 70 (89 before sudden death was made a fraction of max HP), Anchor 63,
 
 - The weak ones against bots (Featherweight, Scramble, Wrecking Ball, Paper Dragon, Last Call) are the cards that need a human to use them (dodging, ring-outs, burst timing); they are the first to look at in a human playtest.
 - Thick Skin is still the best pick against a bot (a bot rarely kills before sudden death). Counter-cards for tanks exist now (Late Bloomer, Paper Dragon, blasts); watch it in real play.
-- Kickback's recoil arrives from the host (about 1.6 units of correction on average); Gravedigger and Salamander depend on the map (ring-outs, hazards); Demo Permit needs barrels (all four maps have them).
+- Kickback's recoil arrives from the host (about 1.6 units of correction on average); Gravedigger and Salamander depend on the map (ring-outs, hazards); Demo Permit needs barrels (every map has at least one pair).
 - Parting Gift and Vendetta create more draws and rematches of the same pressure; if draws feel bad, shorten the fuse or the radius.

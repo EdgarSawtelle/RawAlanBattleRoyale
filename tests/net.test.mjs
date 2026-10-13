@@ -14,7 +14,15 @@ import { makeRoomCode, normaliseCode, isValidCode, inviteLink, codeFromHash, cle
 import { createBot, botInput } from '../src/practice/dummy-bot.js';
 import { STEP } from '../src/sim/world.js';
 import { ROTATION } from '../src/maps/index.js';
-import { killPlayer } from '../src/sim/combat.js';
+import { killPlayer, spawnBullet } from '../src/sim/combat.js';
+import { createState, step } from '../src/sim/world.js';
+import { matchView } from '../src/sim/match.js';
+import { ClientWorld, buildSnap } from '../src/net/snapshot.js';
+import { PeerTransport } from '../src/net/peer-transport.js';
+import { netQuality, describePath } from '../src/net/quality.js';
+import { classifyCandidates, verdictFor, runConnectionTest } from '../src/net/diagnose.js';
+import { describeError } from '../src/net/connect.js';
+import { registerMap } from '../src/maps/index.js';
 
 let passed = 0, failed = 0;
 const pending = [];
@@ -125,7 +133,7 @@ test('input delivery: the host applies the client\'s inputs even with 30% packet
   ok(R.host.state.players[1].y < y0 - 8 || !R.host.state.players[1].grounded, 'the jump tap arrived');
 });
 
-test('snapshots: the client view follows the host closely (interpolated about 100 ms behind), smooth, and teleports are not smeared', () => {
+test('snapshots: the client view follows the host closely (interpolated a short, adaptive time behind), smooth, and teleports are not smeared', () => {
   const R = rig({ latency: 50, jitter: 12, loss: 0.05 }); R.intentsOn = false; R.connect();
   const hist = []; // host positions per tick
   const origTick = R.host._tick.bind(R.host);
@@ -143,10 +151,10 @@ test('snapshots: the client view follows the host closely (interpolated about 10
   // smoothness: consecutive rendered frames never jump more than a plain run speed allows
   let maxStep = 0; for (let i = 1; i < R.rends.length; i++) for (let k = 0; k < 2; k++) { const d = Math.hypot(R.rends[i].p[k][0] - R.rends[i - 1].p[k][0], R.rends[i].p[k][1] - R.rends[i - 1].p[k][1]); if (d < 100) maxStep = Math.max(maxStep, d); }
   ok(maxStep < 12, 'max per-frame step ' + maxStep.toFixed(1));
-  // the render time sits about interpDelay behind the newest snapshot
+  // the render time sits a little behind the newest snapshot (the link's one-way time + the adaptive buffer, 40-150 ms)
   const last = R.rends[R.rends.length - 1];
   const behind = (R.host.state.tick - last.rt) * (1000 / 60);
-  ok(behind > 110 && behind < 280, 'renders ' + behind.toFixed(0) + ' ms behind the host (50 ms latency + the 100 ms buffer)');
+  ok(behind > 60 && behind < 280, 'renders ' + behind.toFixed(0) + ' ms behind the host (50 ms latency + the adaptive buffer)');
 });
 
 test('events: every host event reaches the client exactly once and in order, even with loss and jitter', () => {
@@ -165,9 +173,11 @@ test('events: every host event reaches the client exactly once and in order, eve
 
 test('a full match to 5 between two bots over a bad link (80 ms, jitter 20, 5% loss): quiz + card picks on both sides, same score on both screens, then rematch needs both players', () => {
   const R = rig({ latency: 80, jitter: 20, loss: 0.05 }, { seed: 10 }); R.connect();
+  // (who wins a round between two bots is chaos: make sure each side loses one by hand so both quiz paths are exercised)
+  let forced = 0; R.forceLoss = () => { const st = R.host.state; if (st.phase === 'playing' && st.roundTick > 120 && forced < 2 && st.round === forced + 1) { killPlayer(st, forced, 1 - forced); forced++; } };
   const askers = new Set(), seen = { hostLoser: 0, clientLoser: 0 }; let lastPhase = '';
   const watch = () => { const ph = R.host.state.phase; if (ph === 'quiz' && lastPhase !== 'quiz') { askers.add(R.host.state.match.loser); seen[R.host.state.match.loser === 0 ? 'hostLoser' : 'clientLoser']++; } lastPhase = ph; };
-  const origSlice = R.slice; R.slice = () => { origSlice(); watch(); };
+  const origSlice = R.slice; R.slice = () => { origSlice(); R.forceLoss(); watch(); };
   const done = R.runUntil(() => hostPhase(R) === 'matchEnd', 40 * 60 * 1000);
   ok(done, 'the match finished (round ' + R.host.state.round + ', phase ' + hostPhase(R) + ')');
   R.run(2000);
@@ -352,8 +362,205 @@ test('two players with the same name are told apart', () => {
 });
 
 // ---------------------------------------------------------------------------------------------------------------------
+//  Latency work: adaptive interpolation, snapshot rate, the unreliable channel, local echo, lag compensation, host tick rate,
+//  the network readout and the connection diagnosis.
+// ---------------------------------------------------------------------------------------------------------------------
+test('a snapshot that was made before the newest match view and arrives after it cannot bring the old phase back (it froze the client in roundEnd while the host asked the quiz)', () => {
+  const st = createState({ mapId: 'ruined-city', seed: 1, rotate: false });
+  const w = new ClientWorld();
+  const view = (v, phase) => ({ ...matchView(st), v, phase }); delete view(0, 'x').timer;
+  w.applyView(view(17, 'roundEnd'));
+  const snap = (tick, mvs, ph) => ({ ...buildSnap(st, tick, 0, mvs, 0), tick, ph });
+  w.applySnap(snap(100, 17, 'roundEnd'), 0, 16.7);
+  ok(w.state.phase === 'roundEnd', 'roundEnd while the views agree');
+  w.applyView(view(18, 'quiz'));                                          // the quiz begins: a newer view
+  ok(w.state.phase === 'quiz', 'the view moved us to the quiz');
+  w.applySnap(snap(101, 17, 'roundEnd'), 16, 16.7);                       // an older snapshot overtakes the view on the unordered channel
+  ok(w.state.phase === 'quiz', 'still in the quiz: ' + w.state.phase);
+  w.applySnap(snap(102, 18, 'playing'), 32, 16.7);                        // a snapshot under the current view may move the phase (playing <-> roundEnd)
+  ok(w.state.phase === 'playing', 'a snapshot made under the current view still moves the phase: ' + w.state.phase);
+});
+
+test('adaptive interpolation delay: short on a steady link, longer when the link jitters, always inside the clamp, and it changes smoothly (no time warp)', () => {
+  const run = (o) => {
+    const R = rig(o, { seed: 3 }); R.intentsOn = false; R.bots = false; R.connect(); R.run(2000);
+    const series = []; for (let i = 0; i < 2500; i++) { R.slice(); series.push(R.guest.world.delayMs); }
+    let maxUp = 0, maxDown = 0; for (let i = 1; i < series.length; i++) { maxUp = Math.max(maxUp, series[i] - series[i - 1]); maxDown = Math.max(maxDown, series[i - 1] - series[i]); }
+    return { d: series[series.length - 1], maxUp, maxDown, R };
+  };
+  const clean = run({ latency: 20 }), jit = run({ latency: 40, jitter: 40, loss: 0.04 });
+  const lo = CONFIG.net.interpMin * 1000, hi = CONFIG.net.interpMax * 1000;
+  console.log('        interpolation delay: steady link ' + clean.d.toFixed(0) + ' ms, jittery link (+/-40 ms, 4% loss) ' + jit.d.toFixed(0) + ' ms (clamp ' + lo + '..' + hi + ' ms), largest step per 4 ms frame: up ' + jit.maxUp.toFixed(2) + ', down ' + jit.maxDown.toFixed(2));
+  ok(clean.d >= lo && clean.d <= 70, 'steady link: ' + clean.d.toFixed(1) + ' ms (about 1.5 snapshot intervals)');
+  ok(jit.d > clean.d + 15 && jit.d <= hi + 0.01, 'jittery link: ' + jit.d.toFixed(1) + ' ms');
+  ok(jit.maxUp <= 8.01 && jit.maxDown <= 0.76 && clean.maxDown <= 0.76, 'smooth: per snapshot it grows at most 4 ms and shrinks at most 0.25 ms (a 4 ms frame can carry a burst of 2-3)');
+  // against the fixed 100 ms the game used before, on the same links
+  const saved = [CONFIG.net.interpMin, CONFIG.net.interpMax]; CONFIG.net.interpMin = CONFIG.net.interpMax = 0.1;
+  const fixedJit = run({ latency: 40, jitter: 40, loss: 0.04 }), fixedClean = run({ latency: 20 }); [CONFIG.net.interpMin, CONFIG.net.interpMax] = saved;
+  const ex = (x) => x.R.guest.world.stats.extrapolated;
+  console.log('        frames drawn by extrapolation (buffer ran dry) in 10 s: steady link adaptive ' + ex(clean) + ' / fixed 100 ms ' + ex(fixedClean) + '; jittery link adaptive ' + ex(jit) + ' / fixed 100 ms ' + ex(fixedJit) + ' (of 2500)');
+  ok(ex(clean) <= 5, 'steady link: the short delay does not starve the buffer: ' + ex(clean));
+  ok(ex(jit) <= ex(fixedJit) + 10 && ex(jit) < 125, 'jittery link: no worse than the fixed delay and under 5% of the frames: ' + ex(jit) + ' vs ' + ex(fixedJit));
+});
+
+test('snapshot rate: 60 Hz while the link is good, 30 Hz when the round trip or the loss is high or the host machine is slow; the client is told', () => {
+  const rate = (o, pre) => { const R = rig(o); R.intentsOn = false; R.bots = false; R.connect(); if (pre) pre(R); R.run(6000); return R; };
+  const good = rate({ latency: 20 }), far = rate({ latency: 160 }), lossy = rate({ latency: 30, loss: 0.15 }, null);
+  ok(good.host.snapEvery === 1 && good.guest.hostSnapEvery === 1, 'good link: every tick (' + good.host.snapEvery + ')');
+  ok(far.host.snapEvery === 2 && far.guest.hostSnapEvery === 2, 'a 320 ms round trip: every second tick (' + far.host.snapEvery + ')');
+  ok(lossy.host.snapEvery === 2, 'lossy link: every second tick (' + lossy.host.snapEvery + ', snapshot loss seen ' + lossy.guest.snapLoss.toFixed(2) + ')');
+  const slow = rate({ latency: 20 }, (R) => { R.host.timeScale = 0.6; });
+  ok(slow.host.hostSlow && slow.host.snapEvery === 2, 'a struggling host drops to 30 Hz: ' + slow.host.tickHz.toFixed(1) + ' ticks/s');
+  ok(slow.guest.hostSlow && Math.abs(slow.guest.hostHz - slow.host.tickHz) < 3 && slow.guest.netInfo().hostSlow, 'the client knows: it reads ' + slow.guest.hostHz + ' ticks/s from the snapshots');
+  ok(!good.host.hostSlow && !good.guest.hostSlow && good.guest.hostHz > 58, 'no warning on a healthy host (' + good.guest.hostHz + ' ticks/s)');
+  // message size and traffic at both rates
+  const bytes = (R) => R.guest.transport.stats.rxBytes / 6;
+  console.log('        traffic to the client: 60 Hz ' + (bytes(good) / 1024).toFixed(1) + ' kB/s, 30 Hz ' + (bytes(far) / 1024).toFixed(1) + ' kB/s; snapshot ' + JSON.stringify({ t: 'snap', ...buildSnap(good.host.state, 1, 1, 1, 1, { hz: 60, se: 1, il: 0 }) }).length + ' bytes');
+});
+
+test('lag compensation: a client bullet is tested against where the host player WAS (bounded), so what the client aimed at counts; the host\'s own bullets and the shield are not rewound; a client cannot claim more than lagCompMax', () => {
+  registerMap({ id: 'lc-room', name: 'test', background: 'none', spawns: [{ x: 300, y: 485 }, { x: 1000, y: 485 }], solids: [{ x: 60, y: 500, w: 1160, h: 40 }], destructibles: [], platforms: [] });
+  const RUN = { left: false, right: true, jump: false, jumpPressed: false, shoot: false, block: false, aim: 0 }, IDLE = { ...RUN, right: false };
+  // the host player runs right; the bullet sits where it was `back` ticks earlier. Does it count?
+  const trial = (owner, lag, back) => {
+    const s = createState({ mapId: 'lc-room', seed: 1, rotate: false }); s.cheats.invulnerable = [false, false]; s.lag = [0, 0];
+    for (let i = 0; i < 90; i++) step(s, [IDLE, IDLE], STEP);
+    s.roundTime = 0;
+    for (let i = 0; i < 40; i++) step(s, [RUN, IDLE], STEP);
+    const past = s.hist[(s.tick - back) & 15], target = s.players[0];
+    ok(past && past[0] === s.tick - back, 'history has the tick');
+    const hp0 = target.hp;
+    const b = spawnBullet(s, owner, { x: past[1], y: past[2], angle: 0, speed: 0, damage: 20, gravity: 0 }); b.immune = 0;
+    s.lag = [0, 0]; s.lag[owner] = lag;
+    step(s, [RUN, IDLE], STEP);
+    return { hit: target.hp < hp0, moved: Math.abs(target.x - past[1]) };
+  };
+  const present = trial(1, 0, 6), rewound = trial(1, 6, 6);
+  console.log('        the host player had moved ' + present.moved.toFixed(0) + ' units since the client saw it: a bullet at the old spot misses without lag compensation (' + !present.hit + ') and hits with it (' + rewound.hit + ')');
+  ok(present.moved > 25, 'the target really moved on: ' + present.moved);
+  ok(!present.hit, 'without compensation the bullet at the old spot misses');
+  ok(rewound.hit, 'with a rewind of 6 ticks the same bullet hits');
+  ok(!trial(1, 1, 6).hit && !trial(1, 12, 6).hit, 'a rewind that does not match where the client saw it does not hit (it is not a bigger hitbox)');
+  // bounded: the host clamps what the client reports
+  const R = rig({ latency: 20 }); R.intentsOn = false; R.bots = false; R.connect(); R.run(2000);
+  R.host._onInput({ f: [[999999, 0, 0]], vd: 100000 }); R.host._measure(R.now);
+  ok(R.host.clientVd === CONFIG.net.lagCompMax * 1000 && R.host.lagTicks <= Math.round(CONFIG.net.lagCompMax * CONFIG.tickRate), 'a client claiming 100 s of lag gets ' + R.host.clientVd + ' ms / ' + R.host.lagTicks + ' ticks at most');
+  ok(R.host.lagTicks < 16, 'always inside the 16-tick position history');
+  R.host._tick(R.now);
+  ok(R.host.state.lag[0] === 0 && R.host.state.lag[1] === R.host.lagTicks, 'only the client\'s bullets are rewound, the host\'s own are tested in the present: ' + JSON.stringify(R.host.state.lag));
+  R.host._onInput({ f: [[999998, 0, 0]], vd: -50 });
+  ok(R.host.clientVd === CONFIG.net.lagCompMax * 1000, 'a negative claim is ignored');
+  R.host._onInput({ f: [[999997, 0, 0]], vd: 'lots' });
+  ok(R.host.clientVd === CONFIG.net.lagCompMax * 1000, 'a non-number claim is ignored');
+});
+
+test('the second, truly unreliable channel: { ordered: false, maxRetransmits: 0 } with a fixed id on the same connection; snapshots and inputs use it only once both sides proved it works; the reliable channel carries the rest and is the fallback', () => {
+  const log = { r: [], u: [] }; let chOpts = null, fakeCh = null, throwOnCreate = false;
+  const mkConn = () => ({ handlers: {}, on(ev, fn) { this.handlers[ev] = fn; }, send(s) { log.r.push(s); }, close() {}, peerConnection: { addEventListener() {}, createDataChannel(name, o) { if (throwOnCreate) throw new Error('refused'); chOpts = o; fakeCh = { readyState: 'open', send(s) { log.u.push(s); }, close() {} }; return fakeCh; } } });
+  const t = new PeerTransport(mkConn(), null); const got = []; t.onmessage = (m) => got.push(m);
+  t.setupUnreliable();
+  ok(chOpts && chOpts.ordered === false && chOpts.maxRetransmits === 0 && chOpts.negotiated === true && Number.isInteger(chOpts.id), 'options: ' + JSON.stringify(chOpts));
+  t.send({ t: 'snap', n: 1 }, false);
+  ok(log.r.length === 1 && log.u.length === 0 && t.channel === 'reliable only', 'before the probe is answered everything goes the reliable way');
+  fakeCh.onmessage({ data: 'U!' });                                                        // the other side answered our probe
+  ok(t.usingUnreliable && /unreliable/.test(t.channel), 'channel label: ' + t.channel);
+  t.send({ t: 'snap', n: 2 }, false); t.send({ t: 'ev', n: 3 }, true);
+  ok(log.u.length === 1 && JSON.parse(log.u[0]).n === 2 && log.r.length === 2 && JSON.parse(log.r[1]).n === 3, 'snapshots go unreliable, events stay reliable');
+  fakeCh.onmessage({ data: JSON.stringify({ t: 'in', f: [[1, 0, 0]] }) }); fakeCh.onmessage({ data: 'U?' });
+  ok(got.length === 1 && got[0].t === 'in', 'messages from the fast channel are delivered, probes are not');
+  ok(log.u.some((s) => s === 'U!'), 'a probe from the other side is answered');
+  fakeCh.onclose(); t.send({ t: 'snap', n: 4 }, false);
+  ok(!t.usingUnreliable && log.r.length === 3, 'if the fast channel closes everything falls back to the reliable one');
+  throwOnCreate = true; const t2 = new PeerTransport(mkConn(), null); t2.setupUnreliable(); t2.send({ t: 'snap' }, false);
+  ok(!t2.usingUnreliable && t2.channel === 'reliable only', 'a browser that refuses the channel keeps working on the reliable one');
+  // the selected ICE candidate pair says direct or relayed
+  const stats = new Map([['T', { type: 'transport', selectedCandidatePairId: 'P' }], ['P', { type: 'candidate-pair', id: 'P', localCandidateId: 'L', remoteCandidateId: 'M', currentRoundTripTime: 0.042 }], ['L', { type: 'local-candidate', candidateType: 'srflx', protocol: 'udp' }], ['M', { type: 'remote-candidate', candidateType: 'host', protocol: 'udp' }]]);
+  const c3 = mkConn(); c3.peerConnection.getStats = async () => stats; const t3 = new PeerTransport(c3, null);
+  return t3.probePath().then((p) => {
+    ok(p && p.kind === 'direct' && p.local === 'srflx' && p.rtt === 42, 'direct path: ' + JSON.stringify(p));
+    stats.get('M').candidateType = 'relay'; return t3.probePath();
+  }).then((p) => { ok(p.kind === 'relayed', 'relayed path: ' + JSON.stringify(p)); ok(/relayed/.test(describePath(p)), describePath(p)); t.close('x'); t2.close('x'); t3.close('x'); });
+});
+
+test('local echo: your own shot, recoil and shield show at once; the echo agrees with the host on which frames fire; no phantom shots; one bullet per shot on screen', () => {
+  const press = { left: false, right: false, jump: false, jumpPressed: false, shoot: true, shootPressed: true, block: false, aim: 0 };
+  for (const rtt of [60, 150]) {
+    const R = rig({ latency: rtt / 2, jitter: rtt / 10, loss: 0.02 }, { seed: 4 }); R.intentsOn = false; R.bots = false; R.connect(); R.run(2500);
+    R.host.state.cheats.invulnerable = [true, true];
+    // the first click: a bullet of yours is drawn within a frame or two (not after a round trip)
+    let t0 = R.now; R.held = { ...press }; let first = null; const seen = [];
+    while (R.now - t0 < 800) { R.slice(); const r = R.guest.render(R.now); if (first === null && r.state.bullets.some((b) => b.owner === 1)) first = R.now - t0; R.held = { ...press, shootPressed: false }; }
+    ok(first !== null && first <= 24, 'RTT ' + rtt + ': bullet drawn after ' + first + ' ms');
+    // hold the trigger for a while: fire interval, magazine and reload are mirrored, so the client foresees every shot
+    R.held = { ...press, shootPressed: false }; const shotsBefore = R.events.filter((e) => e.type === 'shot' && e.player === 1).length, fired0 = R.guest.echo.stats.fired;
+    let maxDrawn = 0, maxHost = 0;
+    for (let i = 0; i < 2500; i++) { R.slice(); const r = R.guest.render(R.now); maxDrawn = Math.max(maxDrawn, r.state.bullets.filter((b) => b.owner === 1).length); maxHost = Math.max(maxHost, R.host.state.bullets.filter((b) => b.owner === 1).length); }
+    R.held = null; R.run(1500);
+    const hostShots = R.events.filter((e) => e.type === 'shot' && e.player === 1).length - shotsBefore, foreseen = R.guest.echo.stats.fired - fired0;
+    console.log('        RTT ' + rtt + ' ms: first bullet ' + first + ' ms after the click; ' + foreseen + ' shots foreseen of ' + hostShots + ' fired by the host; provisional bullets paired with the host\'s ' + R.guest.echo.stats.paired + '/' + R.guest.echo.stats.spawned + '; most own bullets on screen ' + maxDrawn + ' (host ' + maxHost + ')');
+    ok(Math.abs(foreseen - hostShots) <= 1, 'foreseen ' + foreseen + ' vs host ' + hostShots + ' (a phantom shot would show a bullet the host never fired)');
+    ok(R.guest.echo.stats.paired >= R.guest.echo.stats.spawned - 2, 'every provisional bullet met its authoritative twin');
+    ok(maxDrawn <= maxHost + 1, 'never two bullets drawn for one shot: most own bullets drawn ' + maxDrawn + ', host ' + maxHost);
+  }
+  // no ammo / reloading / shield up: no echo at all
+  { const R = rig({ latency: 40 }, { seed: 4 }); R.intentsOn = false; R.bots = false; R.connect(); R.run(2500);
+    R.host.state.players[1].ammo = 0; R.host.state.players[1].reloadLeft = 1.5; R.run(100);
+    const f0 = R.guest.echo.stats.fired; R.held = { ...press, shootPressed: false }; R.run(900); R.held = null;
+    ok(R.guest.echo.stats.fired === f0, 'reloading: no shot is echoed (' + (R.guest.echo.stats.fired - f0) + ')');
+    R.run(2500); const b0 = R.guest.echo.stats.blocked, hb0 = R.events.filter((e) => e.type === 'blockStart' && e.player === 1).length;
+    let t0 = R.now; R.held = { ...press, shoot: false, shootPressed: false, block: true }; let shield = null;
+    while (R.now - t0 < 600) { R.slice(); const r = R.guest.render(R.now); if (shield === null && r.state.players[1].blockLeft > 0) shield = R.now - t0; if (R.now - t0 > 100) R.held = { ...R.held, block: false }; }
+    R.run(1000);
+    const hb = R.events.filter((e) => e.type === 'blockStart' && e.player === 1).length - hb0;
+    ok(shield !== null && shield <= 16, 'your shield is drawn after ' + shield + ' ms at RTT 80');
+    ok(R.guest.echo.stats.blocked - b0 === hb && hb === 1, 'one block, echoed once (' + (R.guest.echo.stats.blocked - b0) + ') and started once by the host (' + hb + ')');
+    // holding the button down does not retrigger; the cooldown is mirrored
+    R.held = { ...press, shoot: false, shootPressed: false, block: true }; R.run(3000); const b2 = R.guest.echo.stats.blocked; R.held = null;
+    ok(R.guest.echo.stats.blocked - b0 <= 2, 'cooldown respected: ' + (b2 - b0) + ' blocks in 3 s'); }
+});
+
+test('a quiet bad link: ping with jitter and loss is measured on both sides, the quality colour follows, and the readout names the channel', () => {
+  const bad = rig({ latency: 90, jitter: 40, loss: 0.1 }, { seed: 3 }); bad.intentsOn = false; bad.bots = false; bad.connect(); bad.run(12000);
+  const fine = rig({ latency: 15, jitter: 2 }, { seed: 3 }); fine.intentsOn = false; fine.bots = false; fine.connect(); fine.run(12000);
+  const gb = bad.guest.netInfo(), hb = bad.host.netInfo(), gf = fine.guest.netInfo();
+  console.log('        bad link, client view: ping ' + gb.ping.toFixed(0) + ' ms, jitter ' + gb.jitter.toFixed(0) + ' ms, snapshot loss ' + (gb.lossIn * 100).toFixed(1) + '%, input loss ' + (gb.lossOut * 100).toFixed(1) + '%, quality ' + gb.quality + ' | steady link: ' + gf.ping.toFixed(0) + ' ms, quality ' + gf.quality);
+  ok(gb.ping > 140 && gb.jitter > 5, 'client ping/jitter: ' + gb.ping + ' / ' + gb.jitter);
+  ok(gb.lossIn > 0.03 && gb.lossIn < 0.3, 'snapshot loss measured from sequence numbers: ' + gb.lossIn);
+  ok(hb.lossOut > 0.03 && Math.abs(hb.lossOut - gb.lossIn) < 0.06, 'the host hears about it too: ' + hb.lossOut + ' vs ' + gb.lossIn);
+  ok(gb.quality === 'poor' && hb.quality !== 'good', 'quality: ' + gb.quality + ' / ' + hb.quality);
+  ok(gf.quality === 'good' && gf.snapHz === 60 && gf.interpMs !== null && gf.channel === 'loopback', 'a steady link is good: ' + JSON.stringify(gf));
+  ok(netQuality({ ping: null }) === 'unknown' && netQuality({ ping: 50, jitter: 3, loss: 0 }) === 'good' && netQuality({ ping: 100 }) === 'ok' && netQuality({ ping: 50, loss: 0.1 }) === 'poor' && netQuality({ ping: 50, jitter: 60 }) === 'poor', 'thresholds');
+  ok(describePath(null) === '-' && /direct \(same network/.test(describePath({ kind: 'direct', local: 'host', remote: 'host', protocol: 'udp' })), 'describePath');
+});
+
+test('connection diagnosis: candidate parsing, the verdict for every failing step, and plain-language error texts', () => {
+  const c = (typ, ip, port) => 'candidate:1 1 udp 2113937151 ' + ip + ' ' + port + ' typ ' + typ + ' generation 0';
+  const open = classifyCandidates([c('host', 'abcd.local', 5000), c('srflx', '203.0.113.7', 40001)]);
+  ok(open.host === 1 && open.srflx === 1 && open.ports[0] === '203.0.113.7:40001', 'parse ' + JSON.stringify(open));
+  const cr = (ip, port, rport) => 'candidate:1 1 udp 1677729535 ' + ip + ' ' + port + ' typ srflx raddr 0.0.0.0 rport ' + rport + ' generation 0';
+  const strict = classifyCandidates([cr('203.0.113.7', 40001, 55000), cr('203.0.113.7', 40002, 55000)]);
+  const dual = classifyCandidates([cr('203.0.113.7', 40001, 55000), cr('2001:db8::7', 40001, 55001), cr('203.0.113.7', 40003, 55002)]);   // IPv4 + IPv6, or two local sockets: not strict
+  const blocked = classifyCandidates([c('host', 'abcd.local', 5000)]);
+  const broker = { ok: true, ms: 120 };
+  ok(verdictFor({ webrtc: true, broker, ice: open }).level === 'good' && verdictFor({ webrtc: true, broker, ice: dual }).level === 'good', 'good (also with several local sockets or IPv4 + IPv6)');
+  ok(verdictFor({ webrtc: true, broker, ice: strict }).level === 'warn' && /strict NAT/.test(verdictFor({ webrtc: true, broker, ice: strict }).headline), 'strict NAT');
+  const noUdp = verdictFor({ webrtc: true, broker, ice: blocked });
+  ok(noUdp.level === 'bad' && /blocked/.test(noUdp.headline) && /hotspot/.test(noUdp.advice), 'UDP blocked: ' + noUdp.headline);
+  const noBroker = verdictFor({ webrtc: true, broker: { ok: false, error: 'no answer' }, ice: open });
+  ok(noBroker.level === 'bad' && /matchmaking/.test(noBroker.headline) && /hotspot/.test(noBroker.advice), 'broker: ' + noBroker.headline);
+  ok(verdictFor({ webrtc: false }).level === 'bad', 'no WebRTC');
+  for (const [type, re] of [['peer-unavailable', /Room not found/], ['broker', /matchmaking server/], ['failed', /hotspot or your home network/], ['timeout', /peer-to-peer/], ['id-taken', /already in use/], ['full', /full/], ['version', /different version/]]) ok(re.test(describeError({ type })), type + ': ' + describeError({ type }));
+  // the runner (with fakes): the report says which step failed
+  class FakeRTC { constructor() { this.onicecandidate = null; } createDataChannel() {} createOffer() { return Promise.resolve({}); } setLocalDescription() { setTimeout(() => { this.onicecandidate({ candidate: { candidate: c('host', 'x.local', 1) } }); this.onicecandidate({ candidate: null }); }, 1); return Promise.resolve(); } close() {} }
+  return runConnectionTest({ probeBroker: async () => ({ ok: true, ms: 80 }), RTC: FakeRTC }).then((r) => {
+    ok(r.lines.length === 3 && r.verdict.level === 'bad' && /\[FAIL\] Peer-to-peer/.test(r.report) && /\[ok\]   Matchmaking server: reachable \(80 ms\)/.test(r.report), 'report:\n' + r.report);
+    console.log('        sample report:\n          ' + r.report.split('\n').join('\n          '));
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
 for (const t of pending) {
-  try { t.fn(); passed++; console.log('PASS  ' + t.name); }
+  try { await t.fn(); passed++; console.log('PASS  ' + t.name); }
   catch (e) { failed++; console.log('FAIL  ' + t.name + '\n        ' + (e.stack || e.message).split('\n').slice(0, 3).join('\n        ')); }
 }
 console.log('\n' + passed + ' passed, ' + failed + ' failed');

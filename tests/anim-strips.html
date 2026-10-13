@@ -1,0 +1,78 @@
+<!doctype html>
+<!-- Motion strips for the character animation (a development picture, not part of the game).
+     http://localhost:8123/tests/anim-strips.html?scene=jump&scale=3[&anim=0]      scenes: jump run wall glide shoot hit victory airjump limpet block
+     Runs the REAL simulation with a scripted input, the REAL renderer (render.js draws every tick, like the game does) and the REAL fx,
+     and cuts the player out of the frame every few ticks, so the frames of one strip are consecutive moments of the game. -->
+<html lang="en"><head><meta charset="utf-8"><title>Animation strips</title>
+<style>html,body{margin:0;background:#1b1916}canvas{display:block;image-rendering:pixelated}#game{position:absolute;left:-9999px}</style></head>
+<body><canvas id="game"></canvas><canvas id="strip"></canvas>
+<script type="module">
+import { CONFIG } from '../src/config.js';
+import { MAPS, registerMap } from '../src/maps/index.js';
+import { createState, step, STEP, setCards } from '../src/sim/world.js';
+import { spawnBullet } from '../src/sim/combat.js';
+import { killPlayer } from '../src/sim/combat.js';
+import { createRenderer } from '../src/client/render.js';
+import { createFx, fxEvents, fxUpdate } from '../src/client/fx.js';
+import { TXT, L, use } from '../src/client/px.js';
+
+const q = new URLSearchParams(location.search);
+const SCENE = q.get('scene') || 'jump', SCALE = Number(q.get('scale') || 3);
+if (q.get('anim') === '0') CONFIG.render.animations.enabled = false;
+const NONE = { left: false, right: false, jump: false, jumpPressed: false, shoot: false, block: false, aim: 0 };
+const base = MAPS[0];
+registerMap({ ...base, id: 'phys-yard', name: 'Physics yard', solids: base.solids.filter((s) => !(s.x === 250 && s.y === 330) && !(s.x === 210 && s.y === 190)).map((s) => (s.x === 330 && s.y === 416 ? { ...s, y: 80, h: 400 } : s)) });
+
+// scene = { map, cards, setup(st), input(tick, p0, st), start, every, count, who }
+const SC = {
+  jump: { ch: 92, map: base.id, setup: (st) => put(st, 190, 465), input: (t) => ({ ...NONE, jump: t >= 30 && t < 52, jumpPressed: t === 30 }), start: 28, every: 4, count: 14 },
+  run: { map: base.id, setup: (st) => put(st, 100, 465), input: (t) => ({ ...NONE, right: t >= 20 && t < 62 }), start: 18, every: 4, count: 16 },
+  wall: { follow: true, ch: 70, map: 'phys-yard', setup: (st) => put(st, 315, 465), input: climb(), start: 0, every: 5, count: 14 },
+  glide: { follow: true, ch: 60, map: 'phys-yard', setup: (st) => put(st, 315, 150), input: () => ({ ...NONE, right: true }), start: 2, every: 3, count: 14 },
+  shoot: { map: base.id, setup: (st) => put(st, 190, 465), input: (t) => ({ ...NONE, shoot: t === 10, aim: 0.15 }), start: 8, every: 2, count: 14 },
+  hit: { map: base.id, setup: (st) => put(st, 190, 465), input: () => NONE, before: (st, t) => { if (t === 10) spawnBullet(st, 1, { x: st.players[0].x + 45, y: st.players[0].y, angle: Math.PI, speed: 1500, damage: 20, gravity: 0 }); }, start: 8, every: 2, count: 14 },
+  victory: { ch: 80, map: base.id, setup: (st) => put(st, 190, 465), input: () => NONE, before: (st, t) => { if (t === 10) killPlayer(st, 1, 0); }, start: 10, every: 5, count: 14 },
+  airjump: { ch: 100, map: base.id, cards: ['cloudstep'], setup: (st) => put(st, 190, 465), input: (t) => ({ ...NONE, right: true, jump: t >= 20 && t < 60, jumpPressed: t === 20 || t === 44 }), start: 18, every: 4, count: 14 },
+  limpet: { follow: true, ch: 60, map: 'phys-yard', cards: ['limpet'], setup: (st) => put(st, 315, 300), input: () => ({ ...NONE, right: true }), start: 0, every: 4, count: 10 },
+  death: { map: base.id, setup: (st) => put(st, 190, 465), input: () => NONE, before: (st, t) => { if (t === 10) killPlayer(st, 0, 1); }, start: 9, every: 1, count: 14 },
+  oob: { ch: 110, follow: true, map: base.id, setup: (st) => put(st, 640, 780), input: () => NONE, start: 0, every: 4, count: 14 },
+  ledge: { map: base.id, setup: (st) => put(st, 100, 465), input: (t) => ({ ...NONE, right: true }), start: 40, every: 2, count: 14 },
+  land: { ch: 92, map: base.id, setup: (st) => put(st, 190, 465), input: (t) => ({ ...NONE, jump: t >= 30 && t < 52, jumpPressed: t === 30 }), start: 58, every: 2, count: 14 },
+  block: { map: base.id, setup: (st) => put(st, 190, 465), input: (t) => ({ ...NONE, block: t === 10 }), start: 8, every: 2, count: 14 },
+  stop: { map: base.id, setup: (st) => put(st, 100, 465), input: (t) => ({ ...NONE, right: t >= 10 && t < 40 }), start: 36, every: 2, count: 14 },
+};
+function put(st, x, y) { const a = st.players[0], b = st.players[1]; a.x = x; a.y = y; a.vx = a.vy = 0; b.x = 1100; b.y = 465; b.vx = b.vy = 0; }
+function climb() { let prev = false; return (t, S) => { const p = S.players[0], want = (p.grounded || p.wallCoyote > 0) && p.wallRegrab <= 0, f = { ...NONE, right: true, jump: true, jumpPressed: want && !prev }; prev = want; return f; }; }
+
+const sc = SC[SCENE];
+const st = createState({ mapId: sc.map, seed: 3, cards: [sc.cards || [], []], mapLock: sc.map });
+st.cheats.invulnerable = [true, true];
+const fx = createFx();
+const canvas = document.getElementById('game'), R_ = createRenderer(canvas);
+const CWc = 50, CHc = sc.ch || 62, COLS = Number(q.get('cols') || sc.cols || 7), ROWS = Math.ceil(sc.count / COLS), strip = document.getElementById('strip');
+strip.width = CWc * COLS; strip.height = (CHc + 9) * ROWS; strip.style.width = strip.width * SCALE + 'px'; strip.style.height = strip.height * SCALE + 'px';
+const sg = strip.getContext('2d'); sg.imageSmoothingEnabled = false; sg.fillStyle = '#1b1916'; sg.fillRect(0, 0, strip.width, strip.height);
+st.players[1].alive = true; sc.setup(st);
+let cell = 0, ground = null;
+const total = sc.start + sc.every * sc.count + 2;
+let prevSnap = null;
+for (let t = 0; t < total && cell < sc.count; t++) {
+  if (sc.before) sc.before(st, t);
+  prevSnap = { players: st.players.map((p) => ({ x: p.x, y: p.y })), bullets: new Map() };
+  const ev = step(st, [sc.input(t, st), null], STEP);
+  fxEvents(fx, ev); fxUpdate(fx, STEP);
+  R_.draw(st, prevSnap, 1, fx);
+  const p = st.players[0];
+  (window.__dbg = window.__dbg || []).push([t, JSON.stringify(fx.anim.players[0].pose && { lean: fx.anim.players[0].pose.lean, hands: fx.anim.players[0].pose.hands, rot: fx.anim.players[0].pose.rot, st: fx.anim.players[0].pose.state, kick: fx.anim.players[0].pose.kick, lagx: fx.anim.players[0].pose.lagx, px: fx.anim.players[0].pose.px, py: fx.anim.players[0].pose.py })]);
+  if (ground === null) ground = L(p.y + p.h / 2);
+  if (t >= sc.start && (t - sc.start) % sc.every === 0) {
+    const cx = L(p.x), sx = cx - CWc / 2, sy = (sc.follow ? L(p.y + p.h / 2) : ground) - CHc + 8;
+    const ox = (cell % COLS) * CWc, oy = Math.floor(cell / COLS) * (CHc + 9);
+    sg.drawImage(canvas, sx, sy, CWc, CHc, ox, oy + 9, CWc, CHc);
+    sg.fillStyle = '#1b1916'; sg.fillRect(ox + CWc - 1, oy + 9, 1, CHc);
+    TXT(String(t), ox + 2, oy + 1, '#c9c2a8', 1);
+    cell++;
+  }
+}
+window.__strip = { ready: true, W: strip.width, H: strip.height, scale: SCALE, cells: cell };
+</script></body></html>

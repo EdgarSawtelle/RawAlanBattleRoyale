@@ -245,16 +245,16 @@ test('every card in cards.js has the required fields', () => {
   ok(new Set(CARDS.map((c) => c.id)).size === CARDS.length, 'unique ids');
 });
 
-test('falling out of the bottom: 30% max HP damage, thrown back up and towards the centre', () => {
+test('falling out of the bottom: 15% max HP damage, thrown back up and towards the centre', () => {
   const s = fresh('t-island'); place(s.players[1], 650, 485);
   place(s.players[0], 480, 400);                                  // not above the island: falls into the pit
   let evs = run(s, 100);
   ok(count(evs, 'oob') === 1, 'oob event: ' + count(evs, 'oob'));
-  near(s.players[0].hp, 70, 0.001, 'hp after the fall');
+  near(s.players[0].hp, 85, 0.001, 'hp after the fall');
   ok(s.players[0].vy < 0 || s.players[0].y < 720, 'back inside / launched');
   evs = run(s, 20);
   ok(s.players[0].vx > 0 || s.players[0].x > 480, 'moved towards the centre');
-  ok(s.players[0].oobInv > 0 || s.players[0].hp === 70, 'invulnerability prevents instant re-damage');
+  ok(s.players[0].oobInv > 0 || s.players[0].hp === 85, 'invulnerability prevents instant re-damage');
   ok(s.players[0].alive, 'still alive');
 });
 
@@ -263,7 +263,7 @@ test('falling out of the side: damage + thrown back inside', () => {
   place(s.players[0], 1320, 300); s.players[0].vx = 200;
   const evs = run(s, 4);
   ok(count(evs, 'oob') === 1, 'oob event');
-  near(s.players[0].hp, 70, 0.001, 'hp');
+  near(s.players[0].hp, 85, 0.001, 'hp');
   ok(s.players[0].vx < 0 && s.players[0].x < 1280, 'launched back to the left, x=' + s.players[0].x + ' vx=' + s.players[0].vx);
   const s2 = fresh('t-island'); place(s2.players[1], 650, 485);
   place(s2.players[0], -50, 300);
@@ -271,10 +271,10 @@ test('falling out of the side: damage + thrown back inside', () => {
   ok(s2.players[0].vx > 0 && s2.players[0].x > 0, 'left side launches to the right');
 });
 
-test('real map: falling into the pit at any x puts the player back on a platform (rarely more than one fall)', () => {
+test('real map (Old Plaza): falling into the pit at any x puts the player back on a platform (rarely more than one fall)', () => {
   let single = 0, total = 0;
   for (let x = 40; x <= 1240; x += 40) {
-    const s = fresh('ruined-city'); place(s.players[1], -500, 400); s.cheats.invulnerable[1] = true;
+    const s = fresh('old-plaza'); place(s.players[1], -500, 400); s.cheats.invulnerable[1] = true;
     place(s.players[0], x, 700); s.players[0].vy = 300;
     const evs = run(s, 360);
     total++; if (count(evs.filter((e) => e.player === 0), 'oob') === 1 && s.players[0].grounded) single++;
@@ -292,7 +292,7 @@ test('going above the top of the screen is free (no damage, no oob)', () => {
 
 test('out of bounds damage can kill and ends the round', () => {
   const s = fresh('t-island'); place(s.players[1], 650, 485);
-  place(s.players[0], 300, 400); s.players[0].hp = 25;
+  place(s.players[0], 300, 400); s.players[0].hp = 12;
   const evs = run(s, 120);
   ok(!s.players[0].alive || s.phase === 'roundEnd', 'dead from the fall');
   ok(s.result && s.result.winner === 1 && s.scores[1] === 1, 'player 1 scores, result=' + JSON.stringify(s.result));
@@ -351,7 +351,7 @@ test('the state is plain JSON and the simulation is deterministic', () => {
   ok(JSON.stringify(copy) === JSON.stringify(a), 'restored copy continues identically');
 });
 
-test('map data: ruined-city is valid (spawns free, unique ids, nothing overlapping)', () => {
+test('map data: every map is valid (spawns free, unique ids, destructibles and a moving platform or hazard)', () => {
   for (const m of MAPS) {
     if (m.id.startsWith('t-')) continue;
     ok(m.spawns.length === 2, 'two spawns');
@@ -360,7 +360,7 @@ test('map data: ruined-city is valid (spawns free, unique ids, nothing overlappi
     for (const p of s.players) ok(!cols.some((c) => Math.abs(p.x - (c.x + c.w / 2)) < (p.w + c.w) / 2 && Math.abs(p.y - (c.y + c.h / 2)) < (p.h + c.h) / 2), 'spawn free of terrain');
     const ids = [...m.destructibles.map((d) => d.id), ...m.platforms.map((d) => d.id)];
     ok(new Set(ids).size === ids.length, 'unique ids');
-    ok(m.destructibles.length > 0 && m.platforms.length > 0, 'has destructibles and a moving platform');
+    ok(m.destructibles.length > 0 && (m.platforms.length > 0 || m.hazards.length > 0), m.id + ' has destructibles and a moving platform or a hazard');
     // players land on their spawn islands (grounded after settling)
     run(s, 30);
     ok(s.players.every((p) => p.grounded), 'both spawns stand on solid ground');
@@ -520,8 +520,8 @@ test('real map: spawns are safe (not in or near hazards or barrels) and reachabl
     }
     for (const d of map.destructibles) if (d.kind === 'barrel') ok(Math.hypot(d.x + d.w / 2 - sp.x, d.y + d.h / 2 - sp.y) > 140, 'barrel ' + d.id + ' too close to a spawn');
   }
-  // mirror image: the right spawn sees the same safety (checked above) and there are hazards of every type
-  const types = new Set(map.hazards.map((h) => h.type)); ok(types.has('spikes') && types.has('grate') && types.has('saw'), 'spikes, grate and saw are all used');
+  // mirror image: the right spawn sees the same safety (checked above); across the rotation spikes and saws are used somewhere (the layouts are sparse now: a map has 0-3 pieces)
+  const types = new Set(MAPS.filter((m) => !m.id.startsWith('t-')).flatMap((m) => m.hazards.map((h) => h.type))); ok(types.has('spikes') && types.has('saw'), 'spikes and saws are used by some map (ember grates have their own tests above)');
   ok(map.destructibles.some((d) => d.kind === 'barrel'), 'has barrels');
   // ids are unique across everything
   const ids = [...map.destructibles.map((d) => d.id), ...map.platforms.map((p) => p.id), ...map.hazards.map((h) => h.id)];

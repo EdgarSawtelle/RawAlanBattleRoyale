@@ -6,6 +6,7 @@ import { CONFIG } from '../config.js';
 import { W, H, use, R, P, TXT, TW } from './px.js';
 import { CARDS_BY_ID } from '../cards.js';
 import { drawIcon } from './icons.js';
+import { netQuality, QUALITY_COLOR } from '../net/quality.js';
 
 const COL = { ink: '#0e0d0c', edge: '#625b4b', bg: '#1b1916', hi: '#3d382e', track: '#2c2924', text: '#e6e0c8', dim: '#968f79', dmg: '#dcd2b0', amber: '#e9a93c', pale: '#f8ebb8' };
 const ACC = [{ base: '#a2552f', hi: '#c77c44' }, { base: '#4a9086', hi: '#7bbfae' }];
@@ -123,13 +124,26 @@ function suddenDeath(state) {
 }
 
 // ---- online extras -----------------------------------------------------------------------------------------------------
-// Small ping readout in the bottom-right corner ("42 MS").
-export function drawPing(g, ms) {
+// Small connection readout in the bottom-right corner: a muted traffic-light dot (green-grey / amber / burnt orange from ping, jitter and
+// loss together, see net/quality.js) and the ping ("42 MS"). `info` = session.netInfo() (or a plain ping in ms).
+export function drawPing(g, info) {
   use(g);
-  const t = (ms === null || ms === undefined ? '-' : Math.round(ms)) + ' MS';
+  const obj = info !== null && typeof info === 'object';
+  const ms = obj ? info.ping : info, q = obj ? (info.quality || netQuality(info)) : netQuality({ ping: ms });
+  const t = (ms === null || ms === undefined ? '-' : Math.round(ms)) + ' MS', col = QUALITY_COLOR[q];
   const w = TW(t, 1);
-  R(W - w - 12, H - 16, w + 8, 11, COL.ink); R(W - w - 11, H - 15, w + 6, 9, COL.bg);
-  TXT(t, W - w - 8, H - 14, ms > 150 ? '#d9622b' : ms > 80 ? COL.amber : '#a3b56c', 1);
+  R(W - w - 20, H - 16, w + 16, 11, COL.ink); R(W - w - 19, H - 15, w + 14, 9, COL.bg);
+  R(W - w - 16, H - 12, 4, 4, col);
+  TXT(t, W - w - 8, H - 14, col, 1);
+}
+
+// "HOST IS RUNNING SLOW": shown on BOTH screens when the host machine cannot keep up 60 ticks per second (the whole match then runs in slow motion).
+export function drawHostSlow(g, hz) {
+  use(g);
+  const l1 = 'HOST IS RUNNING SLOW', l2 = 'THE GAME RUNS AT ' + Math.round(hz) + ' OF 60 TICKS PER SECOND', w = Math.max(TW(l1, 1), TW(l2, 1)) + 16, x = Math.round(W / 2 - w / 2), y = H - 36;
+  R(x, y, w, 25, COL.ink); R(x + 1, y + 1, w - 2, 23, COL.edge); R(x + 2, y + 2, w - 4, 21, COL.bg);
+  TXT(l1, Math.round(W / 2 - TW(l1, 1) / 2), y + 5, Math.floor(performance.now() / 500) % 2 === 0 ? '#d9622b' : COL.amber, 1);
+  TXT(l2, Math.round(W / 2 - TW(l2, 1) / 2), y + 15, COL.dim, 1);
 }
 
 // A message plaque in the middle of the screen: lines = ['OPPONENT DISCONNECTED', 'waiting 28 s ...']

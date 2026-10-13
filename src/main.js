@@ -13,7 +13,7 @@
 //    ?scenario=cfx-slab|cfx-fuse|cfx-ring|cfx-trebuchet|cfx-permit|cfx-cloud|cfx-tithe|cfx-limpet   card effects, frozen at the interesting moment (&stopAfter=N)
 //    ?scenario=glide|climb|arc    physics pictures: wall glide, one-wall climb (&stopAfter=N), a stream of bullets along one arc
 //    ?menu=1             open the Esc menu (help) right away      ?rotate=1   keep the map rotation on in the test URLs   ?prebuild=0   do not pre-build the other maps' backdrops
-//    ?debug=1            open the debug panel              ?hitboxes=1     show hitboxes
+//    ?anim=0             no character animations (rigid sprites)    ?debug=1            open the debug panel              ?hitboxes=1     show hitboxes
 //    ?cards=a,b          cards for you (ids)               ?dcards=a,b     cards for the dummy
 //    ?map=id             start on this map                 ?dummy=active|passive|off
 //    ?seed=n             RNG seed                          ?stopAfter=N    freeze the sim after N ticks
@@ -35,7 +35,7 @@ import { drawScreen, screenActive, hitIntent, keyIntent, getHover, nextDummyStep
 import { createPracticeSession } from './practice/practice-session.js';
 import { createRenderer } from './client/render.js';
 import { createFx, fxEvents, fxUpdate } from './client/fx.js';
-import { drawHud, drawPing, drawNetBanner, drawToast, drawMapBanner, drawHint } from './client/hud.js';
+import { drawHud, drawPing, drawHostSlow, drawNetBanner, drawToast, drawMapBanner, drawHint } from './client/hud.js';
 import { createInput } from './client/input.js';
 import { createDebugPanel } from './client/debug-panel.js';
 import { createLobby } from './client/lobby.js';
@@ -45,6 +45,7 @@ import { pxSVG } from './client/px.js';
 import { getBackgroundStatus } from './client/background.js';
 
 const params = new URLSearchParams(location.search);
+if (params.get('anim') === '0') CONFIG.render.animations.enabled = false;   // ?anim=0: the old rigid sprites (to compare the feel)
 if (params.get('predict') === '0') CONFIG.net.predictOwnMovement = false;   // ?predict=0: see the host's view of yourself (to compare the feel)
 const list = (k) => (params.get(k) ? params.get(k).split(',').filter(Boolean) : []);
 const DEFAULT_NAMES = [...CONFIG.player.names];
@@ -352,7 +353,10 @@ if (params.get('warmup') && mode.kind === 'practice') {
 
 // ---- main loop ---------------------------------------------------------------------------------------------------------------------------------------------
 let last = performance.now(), lastHover = -2, lastHoverAt = 0;
+let skipOdd = false;
 function frame(now) {
+  // A struggling HOST draws every other frame: the simulation (a worker-driven timer on this same thread) must never wait for drawing.
+  if (mode.kind === 'host' && mode.session.hostSlow && (skipOdd = !skipOdd)) { requestAnimationFrame(frame); return; }
   const dt = Math.min(0.25, Math.max(0, (now - last) / 1000)); last = now;
   frames++; fpsT += dt; if (fpsT >= 0.5) { fps = frames / fpsT; frames = 0; fpsT = 0; }
   const m = mode, S = m.session;
@@ -382,7 +386,8 @@ function frame(now) {
     if (toast && performance.now() < toast.until && !screenActive(state)) drawToast(renderer.g, toast.text, toast.icon, toast.tint);
     if (mapBanner && !screenActive(state) && !(online && (S.status === 'paused' || S.status === 'reconnecting'))) { const age = performance.now() - mapBanner.from; if (age < BANNER_MS) drawMapBanner(renderer.g, mapBanner.round, mapBanner.name, Math.min(1, (BANNER_MS - age) / 700, age / 150)); else mapBanner = null; }
     if (online) {
-      drawPing(renderer.g, S.ping);
+      drawPing(renderer.g, S.netInfo());
+      if (S.hostSlow && !screenActive(state)) drawHostSlow(renderer.g, m.kind === 'host' ? S.tickHz : S.hostHz);
       if (m.kind === 'host' && S.status === 'paused') drawNetBanner(renderer.g, ['OPPONENT DISCONNECTED', 'WAITING FOR THEM TO COME BACK: ' + Math.max(0, Math.ceil(CONFIG.net.graceSeconds - (performance.now() - S.pausedAt) / 1000)) + ' S', 'THE MATCH IS PAUSED']);
       if (m.kind === 'guest' && S.status === 'reconnecting') drawNetBanner(renderer.g, ['CONNECTION LOST', 'TRYING TO RECONNECT: ' + Math.max(0, Math.ceil(CONFIG.net.graceSeconds - (performance.now() - S.lostAt) / 1000)) + ' S']);
       // the picker's hover goes to the other screen (throttled)
@@ -392,7 +397,7 @@ function frame(now) {
       } else lastHover = -2;
     }
   }
-  if (dumpEl) dumpEl.textContent = JSON.stringify({ mode: m.kind, tick: state.tick, phase: state.phase, round: state.round, status: S.status || null, ping: S.ping ?? null, pred: m.kind === 'guest' && S.predict ? { on: S.predict.enabled && S.predict.active, ...S.predict.summary() } : null, players: state.players.map((p) => ({ x: Math.round(p.x), y: Math.round(p.y), hp: Math.round(p.hp), alive: p.alive, ammo: p.ammo, cards: p.cards.length })), bullets: state.bullets.length, scores: state.scores, errors: errbox.textContent });
+  if (dumpEl) dumpEl.textContent = JSON.stringify({ mode: m.kind, tick: state.tick, phase: state.phase, round: state.round, status: S.status || null, ping: S.ping ?? null, net: online ? S.netInfo() : null, pred: m.kind === 'guest' && S.predict ? { on: S.predict.enabled && S.predict.active, ...S.predict.summary() } : null, players: state.players.map((p) => ({ x: Math.round(p.x), y: Math.round(p.y), hp: Math.round(p.hp), alive: p.alive, ammo: p.ammo, cards: p.cards.length })), bullets: state.bullets.length, scores: state.scores, errors: errbox.textContent });
   requestAnimationFrame(frame);
 }
 const dumpEl = params.get('dump') === '1' ? Object.assign(document.body.appendChild(document.createElement('pre')), { id: 'dump' }) : null;

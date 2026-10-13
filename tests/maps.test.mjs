@@ -1,25 +1,34 @@
 // Map validity for every map in the rotation: spawns, ids, overlaps, moving things never pass through solids,
-// mirror symmetry (fairness), hazard readability (size), reachability by single jumps / lifts / wall climbing,
-// the rotation rule (all four before any repeat) and that a bot match plays on each map.
+// mirror symmetry (fairness), hazard readability (size), reachability by single jumps / lifts / wall climbing (wall-climb-only
+// surfaces are listed), the design rules that came from the playtests (headroom over every standing surface, no 30-60 u wedge
+// slots, hazard and block density, no hazard in a jump arc, spawn line of sight: tests/maplint.mjs, thresholds in LIMITS there),
+// the rotation rule (all maps before any repeat) and that a bot match plays on each map.
 // Run:  node tests/maps.test.mjs          (prints, per map, which platforms need wall climbing)
 import { MAPS, ROTATION, getMap } from '../src/maps/index.js';
 import { createState, step, STEP, getColliders, nextRound, newMatch } from '../src/sim/world.js';
 import { getHazards } from '../src/sim/hazards.js';
 import { platformPos } from '../src/sim/platforms.js';
 import { reachable, surfaces } from './reach.mjs';
+import { lint, LIMITS } from './maplint.mjs';
 import { createPracticeSession } from '../src/practice/practice-session.js';
 
 let passed = 0, failed = 0;
+const pitRates = {};
 const pending = [];
 function test(name, fn) { pending.push({ name, fn }); }
 function ok(cond, msg) { if (!cond) throw new Error(msg || 'assertion failed'); }
 const overlap = (a, b, m = 0) => a.x < b.x + b.w - m && a.x + a.w > b.x + m && a.y < b.y + b.h - m && a.y + a.h > b.y + m;
 const circleRect = (cx, cy, r, b) => { const dx = Math.max(b.x - cx, 0, cx - (b.x + b.w)), dy = Math.max(b.y - cy, 0, cy - (b.y + b.h)); return dx * dx + dy * dy < r * r; };
 
-test('the rotation holds the real maps (at least four), each with a name, a background and its own file', () => {
-  ok(ROTATION.length >= 4, 'at least four maps: ' + ROTATION.join(', '));
-  const bgs = new Set(ROTATION.map((id) => getMap(id).background)); ok(bgs.size >= 4, 'at least four different backgrounds: ' + [...bgs]);
-  for (const id of ROTATION) { const m = getMap(id); ok(m.name && m.background && m.spawns.length === 2, id + ' has name, background, two spawns'); }
+test('the rotation holds the real maps: at least 29 (the 4 originals + 25 layouts), each with a name, a family, a description, a background and its own id; all 8 backdrop looks are used', () => {
+  ok(ROTATION.length >= 29, 'at least 29 maps: ' + ROTATION.length);
+  const bgs = new Set(ROTATION.map((id) => getMap(id).background)); ok(bgs.size === 4, 'all four backgrounds are used: ' + [...bgs]);
+  const looks = {}; for (const id of ROTATION) { const m = getMap(id); const k = m.background + ' ' + (m.backgroundVariant || 0); looks[k] = (looks[k] || 0) + 1; }
+  ok(Object.keys(looks).length === 8, 'all 8 scene / variant combinations are used: ' + JSON.stringify(looks));
+  for (const [k, n] of Object.entries(looks)) ok(n >= 3, 'every backdrop look has at least 3 maps: ' + k + ' has ' + n);
+  const fam = {}; for (const id of ROTATION) { const m = getMap(id); ok(m.name && m.family && m.description && m.background && m.spawns.length === 2, id + ' has a name, family, description, background and two spawns'); fam[m.family] = (fam[m.family] || 0) + 1; }
+  ok(new Set(ROTATION).size === ROTATION.length && new Set(ROTATION.map((id) => getMap(id).name)).size === ROTATION.length, 'ids and names are unique');
+  console.log('        ' + ROTATION.length + ' maps, families: ' + Object.entries(fam).map(([k, n]) => k + ' ' + n).join(', ') + '; looks: ' + Object.entries(looks).map(([k, n]) => k.replace('overgrown-downtown', 'OD').replace('waterfall-forest', 'WF').replace('old-plaza', 'OP').replace('abandoned-suburb', 'AS') + ' ' + n).join(', '));
 });
 
 for (const id of ROTATION) {
@@ -81,11 +90,28 @@ for (const id of ROTATION) {
     for (const p of map.platforms) { const a = p.path[0], b = p.path[p.path.length - 1]; ok(map.platforms.some((q) => (Math.abs(q.path[0].x - (W - a.x - p.w)) < 1 || Math.abs(q.path[1].x - (W - a.x - p.w)) < 1) && q.w === p.w), 'platform ' + p.id); void b; }
   });
 
-  test(id + ': hazards are easy to see (spike strips at least 48 x 18 = 4+ big teeth), the map has things to destroy, platforms to jump on, a moving platform and a hazard', () => {
+  test(id + ': hazards are easy to see (spike strips at least 48 x 18) and few: 0-' + LIMITS.hazardsMax + ' hazard pieces, ' + LIMITS.blocksMin + '-' + LIMITS.blocksMax + ' destructible blocks, a moving platform or a hazard, ' + LIMITS.slabsMin + '-' + LIMITS.slabsMax + ' slabs', () => {
     for (const h of map.hazards) if (h.type === 'spikes') ok(h.w >= 48 && h.h >= 18, 'spikes ' + h.id + ' is ' + h.w + 'x' + h.h);
-    ok(map.destructibles.length >= 8, 'at least 8 destructible blocks: ' + map.destructibles.length);
-    ok(map.solids.length >= 8, 'at least 8 platforms: ' + map.solids.length);
-    ok(map.platforms.length >= 1 && map.hazards.length >= 3, 'moving platform and hazards');
+    const bad = lint(map).issues.filter((i) => /too many hazards|destructible blocks|needs a moving|slabs d/.test(i)); ok(!bad.length, bad.join('; '));
+  });
+
+  const L = lint(map);
+  const part = (re) => L.issues.filter((i) => re.test(i));
+  test(id + ': headroom: at least ' + LIMITS.headroom + ' u of air over every standing surface (tunnels ' + LIMITS.tunnelMin + '+ where declared)', () => { const b = part(/^headroom/); ok(!b.length, b.slice(0, 4).join('; ')); });
+  test(id + ': no wedge slots (gaps of ' + LIMITS.wedgeLo + '-' + LIMITS.wedgeHi + ' u between facing sides)', () => { const b = part(/^wedge/); ok(!b.length, b.slice(0, 4).join('; ')); });
+  test(id + ': no hazard inside the jump arc between two platforms; the spawns do not see each other along a flat line', () => { const b = part(/jump arc|spawns see/); ok(!b.length, b.slice(0, 4).join('; ')); });
+
+  test(id + ': falling into the pit puts the player back on something in at least half of the cases (one fall, a safe landing)', () => {
+    const N0 = { left: false, right: false, jump: false, jumpPressed: false, shoot: false, block: false, aim: 0 };
+    let single = 0, total = 0;
+    for (let x = 40; x <= 1240; x += 40) {
+      const s = createState({ mapId: id, seed: 1 }); s.cheats.invulnerable[1] = true; s.players[1].x = -500; s.players[1].y = 400;
+      const p = s.players[0]; p.x = x; p.y = 700; p.vy = 300; let oobs = 0;
+      for (let i = 0; i < 360; i++) oobs += step(s, [N0, N0], STEP).filter((e) => e.type === 'oob' && e.player === 0).length;
+      total++; if (oobs === 1 && p.grounded) single++;
+    }
+    pitRates[id] = single + '/' + total;
+    ok(single / total >= 0.5, single + ' of ' + total + ' pit falls ended with one fall and a safe landing');
   });
 
   test(id + ': everything is reachable from both spawns by single jumps, lifts or wall climbing (wall-climb-only listed)', () => {

@@ -391,9 +391,9 @@ test('Gravedigger: a ring-out within 3 s of your hit costs the victim 12 more an
   damagePlayer(s, 1, 10, 0, null, { x: 400, y: 485 }); const hp1 = s.players[1].hp;
   place(s.players[1], -60, 400); const ev = run(s, 2);
   ok(has(ev, 'oob').length === 1, 'fell out');
-  near(s.players[0].hp, 65, 1e-9, 'healed 25'); near(s.players[1].hp, hp1 - 30 - 12, 1e-6, 'fall 30 + 12 extra');
+  near(s.players[0].hp, 65, 1e-9, 'healed 25'); near(s.players[1].hp, hp1 - 15 - 12, 1e-6, 'fall 15 + 12 extra');
   ok(has(ev, 'cardFx', (e) => e.kind === 'ringout').length === 1, 'RING OUT feedback');
-  const t = fresh(['gravedigger'], []); settle(t); damagePlayer(t, 1, 10, 0, null, { x: 0, y: 0 }); run(t, 200); place(t.players[1], -60, 400); run(t, 2); ok(t.players[0].hp === 100 && t.players[1].hp === 90 - 30, 'too late: no credit, hp ' + t.players[1].hp);
+  const t = fresh(['gravedigger'], []); settle(t); damagePlayer(t, 1, 10, 0, null, { x: 0, y: 0 }); run(t, 200); place(t.players[1], -60, 400); run(t, 2); ok(t.players[0].hp === 100 && t.players[1].hp === 90 - 15, 'too late: no credit, hp ' + t.players[1].hp);
   const u = fresh(['gravedigger'], []); settle(u); place(u.players[0], -60, 400); run(u, 2); ok(has(u.events, 'cardFx').length === 0, 'your own fall is not a ring-out');
   ok(stats(['gravedigger']).knockback === 390, 'knockback +50%');
 });

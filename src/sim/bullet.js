@@ -64,7 +64,12 @@ function hitPlayers(state, b) {
       if (b.keep) { delete b.keep; return false; }      // a card (Return Policy) turned it around: it lives on
       return true;
     }
-    if (circleHitsRect(b.x, b.y, b.r, { x: p.x - p.w / 2, y: p.y - p.h / 2, w: p.w, h: p.h })) {
+    // Lag compensation (online host): a bullet of the client is tested against the body where the HOST player was when the client
+    // saw it (state.lag[owner] ticks ago, at most config.net.lagCompMax). Bounded; own bullets and the shield test use the present.
+    let px = p.x, py = p.y;
+    const lag = state.lag ? state.lag[b.owner] : 0;
+    if (lag > 0 && p.index !== b.owner) { const e = state.hist[(state.tick - lag) & 15]; if (e && e[0] === state.tick - lag) { px = e[1 + 2 * p.index]; py = e[2 + 2 * p.index]; } }
+    if (circleHitsRect(b.x, b.y, b.r, { x: px - p.w / 2, y: py - p.h / 2, w: p.w, h: p.h })) {
       fireHook(state, 'onBulletHit', b.owner, { bullet: b, hitType: 'player', target: p, targetIndex: p.index });
       damagePlayer(state, p.index, b.damage, b.owner, b, { x: b.x, y: b.y }, { kind: 'bullet', shotId: b.shotId });
       emit(state, 'impact', { x: b.x, y: b.y, kind: 'player', style: b.style });

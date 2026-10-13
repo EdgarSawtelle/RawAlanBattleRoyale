@@ -7,6 +7,7 @@ import { CONFIG } from '../config.js';
 import { ctx, P, R, L, K, DISC, ELLpx, LNf, bay, hash, RING, TXT, TW } from './px.js';
 import { CARDS_BY_ID } from '../cards.js';
 import { drawIcon } from './icons.js';
+import { createAnim, animEvent } from './anim.js';
 
 export const FXC = { amber: '#e9a93c', ember: '#c9591f', pale: '#f8ebb8', hot: '#fff6d8', smoke1: '#45433f', smoke2: '#66655c', smoke3: '#8a897c', dust: '#9a9684', shield: ['#e8efdc', '#a6d0c4', '#6c9d94', '#3d6963'] };
 const BARREL = ['#a8461f', '#c9591f', '#7a3a1c', '#2b2a27'];
@@ -14,7 +15,7 @@ const CRATE = ['#a79b7c', '#d0c5a2', '#7a7156', '#6f6049'];
 const PLAYER_COL = [['#c77c44', '#a2552f', '#d6a444'], ['#7bbfae', '#4a9086', '#b6ab88']];   // player 0 rust / player 1 teal
 
 export function createFx() {
-  return { parts: [], anims: [], shake: 0, flash: [0, 0], blockFlash: [0, 0], time: 0, seed: 1 };
+  return { parts: [], anims: [], shake: 0, flash: [0, 0], blockFlash: [0, 0], time: 0, seed: 1, anim: createAnim() };   // anim: the characters' animation springs (anim.js, drawn by render.js)
 }
 function rnd(fx) { fx.seed = (fx.seed * 1664525 + 1013904223) >>> 0; return fx.seed / 4294967296; }   // render-side RNG (never touches the sim)
 
@@ -34,8 +35,9 @@ function puff(fx, x, y, n, speed, r, life, col = FXC.smoke2) {
 
 // ---- events -> effects -------------------------------------------------------------------------------------
 export function fxEvents(fx, events) {
-  const F = CONFIG.fx;
+  const F = CONFIG.fx, animOn = CONFIG.render.animations.enabled;
   for (const e of events) {
+    animEvent(fx.anim, e);                                          // squash / recoil / flinch of the characters (render-only)
     switch (e.type) {
       case 'roundStart': fx.parts.length = 0; fx.anims.length = 0; fx.flash = [0, 0]; fx.blockFlash = [0, 0]; fx.shake = 0; break;
       case 'shot':
@@ -99,9 +101,9 @@ export function fxEvents(fx, events) {
         spark(fx, e.x, e.y, -Math.PI / 2, 1.2, 16, 360, [FXC.dust, FXC.smoke3, FXC.pale], 0.6, 300);
         fx.shake = Math.max(fx.shake, 2);
         break;
-      case 'land': puff(fx, e.x, e.y, 3, 70, 1, 0.35, FXC.dust); break;
+      case 'land': if (!animOn) puff(fx, e.x, e.y, 3, 70, 1, 0.35, FXC.dust); break;           // (with animations on the dust comes from fxDust, derived from the state, so the predicted own player gets it at once)
       case 'jump':
-        puff(fx, e.x, e.y, e.wall ? 3 : 2, 50, 1, 0.3, FXC.dust);
+        if (!animOn) puff(fx, e.x, e.y, e.wall ? 3 : 2, 50, 1, 0.3, FXC.dust);
         if (e.air) fx.anims.push({ kind: 'ring', x: e.x, y: e.y + 2, r: 20, t: 0, dur: 0.28, col: FXC.pale, col2: FXC.shield[2], flat: true });     // Cloudstep: a ring under the feet
         break;
       // ---- card effects: the opponent must be able to read what just happened ----
@@ -148,6 +150,36 @@ export function fxEvents(fx, events) {
       default: break;
     }
   }
+}
+
+// ---- character dust (queued by anim.js from the players' own state: start, skid, landing, jumps, wall grab / scrape) ----
+// d = { k, x, y (logical, at the feet / the wall), dir (-1/0/1, the way the dust flies or the movement direction), amt 0..1 }
+export function fxDust(fx, list) {
+  for (const d of list) {
+    const c = [FXC.dust, FXC.smoke3, FXC.dust][Math.floor(rnd(fx) * 3)];
+    const sp1 = (n, vx0, vxR, vy0, vyR, life, grav = 140, col) => {
+      for (let i = 0; i < n; i++) addPart(fx, { x: d.x + (rnd(fx) - 0.5) * 6, y: d.y - 1, vx: vx0() + (rnd(fx) - 0.5) * vxR, vy: vy0 - rnd(fx) * vyR, life: life * (0.7 + rnd(fx) * 0.6), max: life, c: col || c, g: grav, size: 1 });
+    };
+    switch (d.k) {
+      case 'land': {
+        const n = 2 + Math.round(d.amt * 4);
+        for (const sg of [-1, 1]) {
+          sp1(n, () => sg * (40 + 70 * d.amt * rnd(fx)), 30, -6, 34, 0.3);
+          if (d.amt > 0.45) addPart(fx, { x: d.x + sg * 5, y: d.y - 2, vx: sg * 50, vy: -14, life: 0.42, max: 0.42, c: FXC.smoke2, g: -12, size: 2, smoke: true });
+        }
+        break;
+      }
+      case 'jump': for (const sg of [-1, 1]) sp1(2, () => sg * (30 + 40 * rnd(fx)), 20, -4, 22, 0.25); break;
+      case 'airjump': sp1(4, () => 0, 90, 10, -30, 0.28, 100, FXC.pale); break;
+      case 'start': sp1(3, () => -d.dir * (28 + 40 * rnd(fx)), 20, -4, 24, 0.28); break;
+      case 'skid': sp1(3 + Math.round(d.amt * 2), () => d.dir * (30 + 70 * rnd(fx)), 30, -4, 26, 0.3); if (d.amt > 0.6) addPart(fx, { x: d.x + d.dir * 4, y: d.y - 2, vx: d.dir * 36, vy: -10, life: 0.38, max: 0.38, c: FXC.smoke2, g: -12, size: 2, smoke: true }); break;
+      case 'walljump': sp1(4, () => d.dir * (40 + 60 * rnd(fx)), 30, 0, 36, 0.3, 160); break;
+      case 'grab': sp1(2, () => d.dir * (20 + 30 * rnd(fx)), 20, -2, 16, 0.22); break;
+      case 'scrape': sp1(1 + (d.amt > 0.6 ? 1 : 0), () => d.dir * (8 + 24 * rnd(fx)), 10, 4, -26, 0.24, 220); break;
+      default: break;
+    }
+  }
+  list.length = 0;
 }
 
 // ---- advance one tick ---------------------------------------------------------------------------------------

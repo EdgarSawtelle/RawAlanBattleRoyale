@@ -41,7 +41,7 @@ const IDLE = { left: false, right: false, jump: false, jumpPressed: false, shoot
 function rig(netOpts = {}) {
   const clock = virtualClock(0), net = new LoopbackNetwork({ clock, seed: 7, ...netOpts });
   const code = 'ABCDE';
-  const R = { clock, net, now: 0, input: () => IDLE, cover: { wall: 0, ride: 0, wallJumps: 0, oob: 0, airTicks: 0 }, rends: [], events: [] };
+  const R = { clock, net, now: 0, input: () => IDLE, cover: { wall: 0, ride: 0, wallJumps: 0, oob: 0, airTicks: 0, shots: 0 }, rends: [], events: [] };
   R.host = new HostSession({ clock, name: 'HOSTY', seed: 3, mapId: 'pr-room', getLocalInput: () => IDLE });
   R.host.state.cheats.invulnerable = [true, true];
   net.startHost({ code }, { onconnection: (tr) => R.host.attach(tr) });
@@ -57,7 +57,7 @@ function rig(netOpts = {}) {
       if (hp.wallDir !== 0 && !hp.grounded) R.cover.wall++;
       if (hp.groundId) R.cover.ride++;
       if (!hp.grounded) R.cover.airTicks++;
-      for (const e of R.host.drainEvents()) { if (e.type === 'jump' && e.player === 1 && e.wall) R.cover.wallJumps++; if (e.type === 'oob' && e.player === 1) R.cover.oob++; }
+      for (const e of R.host.drainEvents()) { if (e.type === 'jump' && e.player === 1 && e.wall) R.cover.wallJumps++; if (e.type === 'oob' && e.player === 1) R.cover.oob++; if (e.type === 'shot' && e.player === 1) R.cover.shots++; }
     }
   };
   R.run = (ms) => { const end = R.now + ms; while (R.now < end) R.slice(); };
@@ -147,10 +147,11 @@ test('convergence on a bad link (RTT 150 ms, jitter 25 ms, 8% loss): no growing 
   CONFIG.net.predictOwnMovement = true;
   const R = rig({ latency: 75, jitter: 25, loss: 0.08 }); R.run(1500);
   R.input = agent(23)(R);
-  const half = [];
-  R.run(45000); half.push(R.guest.predict.stats.errs.slice());
-  R.run(45000); half.push(R.guest.predict.stats.errs.slice(half[0].length));
-  const m = (a) => { const s = a.filter((e) => e < CONFIG.net.predictSnap); return s.reduce((x, e) => x + e, 0) / Math.max(1, s.length); };
+  // (how much of the arena the scripted player gets to see depends on the link's luck: play on, in 15 s steps, until walls, rides and an out-of-bounds launch have all been covered, 90 s at least)
+  R.run(75000);
+  for (let k = 0; k < 12 && !(R.cover.wallJumps > 5 && R.cover.ride > 100 && R.cover.oob >= 1); k++) R.run(15000);
+  const all = R.guest.predict.stats.errs, mid = Math.floor(all.length / 2), half = [all.slice(0, mid), all.slice(mid)];
+  const m =(a) => { const s = a.filter((e) => e < CONFIG.net.predictSnap); return s.reduce((x, e) => x + e, 0) / Math.max(1, s.length); };
   const S = R.guest.predict.summary(), cv = R.cover;
   console.log('        coverage: wall ' + cv.wall + ', ride ' + cv.ride + ', wall jumps ' + cv.wallJumps + ', oob ' + cv.oob + ' | mean correction first half ' + m(half[0]).toFixed(2) + ', second half ' + m(half[1]).toFixed(2) + ', p95 ' + S.p95Err.toFixed(2) + ', largest per-frame fade ' + S.maxFrameCorr.toFixed(2));
   ok(cv.wallJumps > 5 && cv.ride > 100 && cv.oob >= 1, 'the run exercised walls, rides and out of bounds');
@@ -313,13 +314,21 @@ test('movement cards: with Cloudstep, Limpet, Anchor, Featherweight, Thick Skin,
   console.log('        ' + out.join(' | '));
 });
 
-test('Kickback (an impulse from your own shots): the correction stays small and bounded while firing on a 100 ms round trip', () => {
+test('Kickback (recoil of your own shots) is predicted as part of the movement: the shot is known on the client, so the correction stays small', () => {
   CONFIG.net.predictOwnMovement = true;
-  const R = rig({ latency: 50 }); R.run(1200); setCards(R.host.state, 1, ['kickback']); R.run(400);
-  R.input = agent(41, { shoot: true })(R); R.run(30000);
-  const S = R.guest.predict.summary(), small = R.guest.predict.stats.errs.filter((e) => e < CONFIG.net.predictSnap), mean = small.reduce((s, e) => s + e, 0) / Math.max(1, small.length);
-  console.log('        Kickback while firing: mean correction ' + mean.toFixed(2) + ', p95 ' + S.p95Err.toFixed(2) + ', largest per-frame fade ' + S.maxFrameCorr.toFixed(2) + ', snaps ' + S.snaps);
-  ok(mean < 3 && S.maxFrameCorr < 8, 'bounded: mean ' + mean.toFixed(2) + ', frame ' + S.maxFrameCorr.toFixed(2));
+  const run = (withKick) => {
+    const R = rig({ latency: 50 }); R.run(1200); setCards(R.host.state, 1, ['kickback']); R.run(400);
+    if (!withKick) { const f = R.guest.echo.frame.bind(R.guest.echo); R.guest.echo.frame = (...a) => { const o = f(...a); o.kick = null; return o; }; }   // (what the client did before: recoil was only picked up from snapshots)
+    R.input = agent(41, { shoot: true })(R); R.run(30000);
+    const S = R.guest.predict.summary(), small = R.guest.predict.stats.errs.filter((e) => e < CONFIG.net.predictSnap), mean = small.reduce((s, e) => s + e, 0) / Math.max(1, small.length);
+    return { S, mean, R };
+  };
+  const off = run(false), on = run(true);
+  const fired = on.R.guest.echo.stats.fired, host = on.R.cover.shots;
+  console.log('        recoil not predicted: mean correction ' + off.mean.toFixed(2) + ', p95 ' + off.S.p95Err.toFixed(2) + ', largest per-frame fade ' + off.S.maxFrameCorr.toFixed(2) + ' | predicted: mean ' + on.mean.toFixed(2) + ', p95 ' + on.S.p95Err.toFixed(2) + ', fade ' + on.S.maxFrameCorr.toFixed(2) + ' | the client foresaw ' + fired + ' of the host\'s ' + host + ' shots');
+  ok(on.mean < off.mean * 0.5, 'predicting the recoil at least halves the correction: ' + on.mean.toFixed(2) + ' vs ' + off.mean.toFixed(2));
+  ok(on.mean < 0.8 && on.S.maxFrameCorr < 6, 'small and bounded: mean ' + on.mean.toFixed(2) + ', frame ' + on.S.maxFrameCorr.toFixed(2));
+  ok(Math.abs(fired - host) <= Math.max(3, host * 0.03), 'the echo model agrees with the host on which frames fire: ' + fired + ' vs ' + host);
 });
 
 test('prediction off (flag): the client shows the host view only, as before', () => {

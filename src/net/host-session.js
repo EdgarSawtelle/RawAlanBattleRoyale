@@ -1,7 +1,7 @@
 // ============================================================================
 //  host-session.js - the HOST of an online match. It owns the one true simulation (the same
 //  sim/world.js + sim/match.js the practice mode uses), runs it at a fixed 60 Hz, applies the
-//  client's input frames and intents, and sends snapshots (~30 Hz), events and match views.
+//  client's input frames and intents, and sends snapshots (60 Hz while the link is good, else 30 Hz), events and match views.
 //  The host is also player 0: its own input comes from the local keyboard/mouse.
 //
 //  Time comes from a clock object ({ now() }) and the owner calls advance(now) often (a worker
@@ -12,6 +12,7 @@ import { createState, step, intent, STEP } from '../sim/world.js';
 import { matchView } from '../sim/match.js';
 import { buildSnap } from './snapshot.js';
 import { T, VERSION, decodeFrame, validInputMsg, validIntent } from './protocol.js';
+import { netQuality, hostIsSlow } from './quality.js';
 
 const STEP_MS = 1000 / CONFIG.tickRate;
 const NEUTRAL = { left: false, right: false, jump: false, jumpPressed: false, shoot: false, block: false, aim: 0 };
@@ -38,6 +39,12 @@ export class HostSession {
     this.input = newInputState();
     this.lastRx = 0; this.lastPing = 0; this.ping = null; this.pausedAt = 0;
     this.stats = { snapsSent: 0, inputsRx: 0, intentsRx: 0, stalls: 0 };
+    this.snapEvery = CONFIG.net.snapshotFastEvery;           // 1 = 60 Hz while the link is good, else 2 = 30 Hz (see _chooseRate)
+    this.tickHz = null; this.tickWin = { t0: null, n: 0 };    // measured host ticks per second (sent to the client: "host is running slow")
+    this.loss = { got: 0, missing: 0 }; this.lossIn = 0;     // share of the client's input frames that did not arrive in time
+    this.clientVd = 0; this.lagTicks = 0;                    // the client's reported view delay (ms) and the resulting bounded rewind for its bullets
+    this.jitter = 0;                                         // round-trip jitter (ms), from the pongs
+    this.peerSnapLoss = 0;                                   // share of OUR snapshots that did not reach the client (it reports it)
   }
 
   // ---- connections ---------------------------------------------------------------------------------------------------
@@ -103,8 +110,8 @@ export class HostSession {
         this._viewMaybe(); this._flush();
         break;
       }
-      case T.PING: this.transport.send({ t: T.PONG, ts: m.ts }, true); break;
-      case T.PONG: { const rtt = this.clock.now() - m.ts; this.ping = this.ping === null ? rtt : this.ping * 0.8 + rtt * 0.2; break; }
+      case T.PING: this.transport.send({ t: T.PONG, ts: m.ts }, false); break;
+      case T.PONG: { const rtt = this.clock.now() - m.ts; this.jitter += (Math.abs(rtt - (this.ping === null ? rtt : this.ping)) - this.jitter) / 8; this.ping = this.ping === null ? rtt : this.ping * 0.8 + rtt * 0.2; break; }
       case T.BYE: this._end('Your opponent left the game.'); break;
       default: break;
     }
@@ -121,6 +128,8 @@ export class HostSession {
   _onInput(m) {
     const I = this.input;
     this.stats.inputsRx++;
+    this.peerSnapLoss = typeof m.sl === 'number' && m.sl >= 0 ? Math.min(100, m.sl) / 100 : 0;
+    if (typeof m.vd === 'number' && m.vd >= 0) this.clientVd = Math.min(CONFIG.net.lagCompMax * 1000, m.vd);   // how far behind the client draws the opponent (bounded: a client claiming more gains at most lagCompMax)
     for (let i = m.f.length - 1; i >= 0; i--) {            // oldest first
       const f = decodeFrame(m.f[i]);
       if (I.got.has(f.seq)) continue;                      // a repeat of a frame we already have
@@ -148,6 +157,7 @@ export class HostSession {
       const next = I.proc + 1;
       if (I.q[0].seq === next) f = I.q.shift();             // (otherwise a hole of a few frames: repeat the last input in its place)
       I.proc = next; this.ackSeq = next; I.starve = 0;
+      if (f) this.loss.got++; else this.loss.missing++;                              // a frame that had to be repeated = one that did not arrive in time
     } else { I.starve++; this.stats.stalls++; }
     if (f) I.cur = f;
     let c = I.cur;
@@ -191,7 +201,7 @@ export class HostSession {
     }
     if (this.status !== 'playing') return;
     if (now - this.lastRx > CONFIG.net.timeout * 1000) { this._peerLost('Lost the connection to your opponent.'); return; }
-    if (now - this.lastPing >= CONFIG.net.pingEvery * 1000 && this.transport) { this.lastPing = now; this.transport.send({ t: T.PING, ts: now }, true); }
+    if (now - this.lastPing >= CONFIG.net.pingEvery * 1000 && this.transport) { this.lastPing = now; this.transport.send({ t: T.PING, ts: now }, false); }
     if (this.paused) { this.lastAdvance = now; this.acc = 0; return; }
     if (this.lastAdvance === null) this.lastAdvance = now;
     this.acc += Math.min(250, now - this.lastAdvance) * this.timeScale; this.lastAdvance = now;
@@ -206,17 +216,46 @@ export class HostSession {
   _tick(now) {
     const st = this.state;
     this.prev = { players: st.players.map((p) => ({ x: p.x, y: p.y })), bullets: new Map(st.bullets.map((b) => [b.id, { x: b.x, y: b.y }])) };
+    this._measure(now);
+    st.lag = [0, this.lagTicks];                                 // bullets of the client are tested against where the host player was (bounded rewind, see sim/bullet.js)
     const live = st.phase === 'playing' || st.phase === 'roundEnd';
     const in0 = live ? (this.opts.getLocalInput ? this.opts.getLocalInput(st.players[0]) : NEUTRAL) : NEUTRAL;
     const in1 = live ? this._clientInput() : (this._dropInputs(), NEUTRAL);
     this.ticks++; this.lastTickAt = now;
     const ev = step(st, [in0, in1], STEP);
     this._pushEvents(ev);
-    if (st.tick % CONFIG.net.snapshotEvery === 0) {
+    if (st.tick % this.snapEvery === 0) {
       this._viewMaybe();
-      if (this.transport) { this.seq++; this.transport.send({ t: T.SNAP, ...buildSnap(st, this.seq, this.ackSeq, this.mvVersion, this.input.q.length) }, false); this.stats.snapsSent++; }
+      if (this.transport) { this.seq++; this.transport.send({ t: T.SNAP, ...buildSnap(st, this.seq, this.ackSeq, this.mvVersion, this.input.q.length, { hz: this.tickHz === null ? 60 : Math.round(this.tickHz * 10) / 10, se: this.snapEvery, il: Math.round(this.lossIn * 100) }) }, false); this.stats.snapsSent++; }
     }
     this._flush();
+  }
+
+  // Once a second: the host's real tick rate, the input loss, the snapshot rate (60 Hz while the link is good, 30 Hz when it is
+  // slow or lossy or the host machine is struggling) and the lag compensation window.
+  _measure(now) {
+    const W = this.tickWin; if (W.t0 === null) W.t0 = now; W.n++;
+    if (now - W.t0 >= 1000) {
+      const hz = W.n * 1000 / (now - W.t0); this.tickHz = this.tickHz === null ? hz : this.tickHz * 0.5 + hz * 0.5; W.t0 = now; W.n = 0;
+      const L = this.loss, tot = L.got + L.missing; if (tot >= 30) { this.lossIn = L.missing / tot; L.got = L.missing = 0; }
+      this._chooseRate();
+    }
+    const lagMs = Math.min(CONFIG.net.lagCompMax * 1000, this.clientVd + (this.ping === null ? 0 : this.ping / 2));
+    this.lagTicks = this.transport ? Math.max(0, Math.round(lagMs / STEP_MS)) : 0;
+  }
+  _chooseRate() {
+    const N = CONFIG.net, fast = this.snapEvery === N.snapshotFastEvery, k = fast ? 1.25 : 0.8;   // hysteresis
+    const good = (this.ping === null || this.ping < N.snapshotFastMaxRtt * k) && Math.max(this.lossIn, this.peerSnapLoss) < N.snapshotFastMaxLoss * k && (this.tickHz === null || this.tickHz >= N.hostSlowHz);
+    this.snapEvery = good ? N.snapshotFastEvery : N.snapshotEvery;
+  }
+  get hostSlow() { return hostIsSlow(this.tickHz); }
+
+  // What the player (and the debug panel) is told about the connection. loss = the worse of the two directions.
+  netInfo() {
+    const tr = this.transport, loss = Math.max(this.lossIn, this.peerSnapLoss);
+    return { ping: this.ping, jitter: this.jitter, loss, lossIn: this.lossIn, lossOut: this.peerSnapLoss, hostHz: this.tickHz, hostSlow: this.hostSlow,
+      snapHz: Math.round(CONFIG.tickRate / this.snapEvery), interpMs: null, lagCompMs: Math.round(this.lagTicks * STEP_MS), viewDelayMs: Math.round(this.clientVd),
+      channel: (tr && tr.channel) || 'loopback', path: (tr && tr.path) || null, quality: netQuality({ ping: this.ping, jitter: this.jitter, loss }) };
   }
 
   alpha() { return this.paused || this.status !== 'playing' ? 1 : Math.max(0, Math.min(1, (this.clock.now() - this.lastTickAt) / STEP_MS)); }

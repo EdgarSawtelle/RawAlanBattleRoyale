@@ -1,0 +1,95 @@
+<!doctype html>
+<!-- Pose sheet for the character animation (a development picture, not part of the game).
+     http://localhost:8123/tests/poses.html?size=1&scale=4        size = body size card multiplier (0.6 / 1 / 1.6)
+     Every cell is made by feeding the REAL animation code (src/client/anim.js) a scripted sequence of observations and drawing the
+     result with the REAL drawSurvivor() of render.js, so what you see is what the game draws. -->
+<html lang="en"><head><meta charset="utf-8"><title>Pose sheet</title>
+<style>html,body{margin:0;background:#1b1916}canvas{display:block;image-rendering:pixelated}</style></head>
+<body><canvas id="c"></canvas>
+<script type="module">
+import { CONFIG } from '../src/config.js';
+import { use, R, P, TXT, L } from '../src/client/px.js';
+import { drawSurvivor } from '../src/client/render.js';
+import { createAnim, animUpdate, animEvent, deathPose, NEUTRAL_POSE } from '../src/client/anim.js';
+
+const q = new URLSearchParams(location.search);
+const SIZE = Number(q.get('size') || 1), SCALE = Number(q.get('scale') || 4);
+if (q.get('anim') === '0') CONFIG.render.animations.enabled = false;
+const CW = SIZE > 1 ? 76 : 46, CH = SIZE > 1 ? 80 : 50, COLS = Number(q.get('cols') || 7);
+const DT = 1 / 60;
+const NAMES = [];
+const mk = (over) => ({ x: 0, y: 0, w: 30 * SIZE, h: 30 * SIZE, vx: 0, vy: 0, grounded: true, wall: 0, wallEdge: undefined, aim: 0, alive: true, blockLeft: 0, limpet: false, victory: false, ...over });
+const stepN = (a, n, o) => { let r = null; for (let i = 0; i < n; i++) r = animUpdate(a, typeof o === 'function' ? o(i) : o, DT); return r; };
+
+// each spec: (mir, wallPx) -> { pose, flash, wall }  ; mir = +1 for EMBER (facing right) / -1 for TIDE (facing left)
+function specs() {
+  const S = [];
+  let curName = '';
+  const add = (name, fn) => S.push({ name, fn: (...a) => { curName = name; return fn(...a); } });
+  const ctx = (mir, wallPx) => {
+    const A = createAnim(), a = A.players[0], aim = mir > 0 ? 0 : Math.PI;
+    const wallPose = /GRIP|GLIDE|CLING|WALL/.test(curName);
+    const O = (o) => mk({ aim: wallPose ? (mir > 0 ? Math.PI + 0.45 : -0.45) : aim, ...o });
+    return { A, a, aim, O, V: 300 * mir };
+  };
+  add('IDLE', (m) => { const { a, O } = ctx(m); return { pose: stepN(a, 36, O({})) }; });
+  const runTo = (frac) => (m) => { const { a, O, V } = ctx(m); stepN(a, 50, O({ vx: V })); let n = 0, r; do { r = animUpdate(a, O({ vx: V }), DT); n++; } while (Math.abs((a.phase % 1) - frac) > 0.06 && n < 60); return { pose: r }; };
+  add('RUN 1', runTo(0.02)); add('RUN 2', runTo(0.5)); add('RUN 3', runTo(0.8));
+  add('TAKEOFF', (m) => { const { a, O } = ctx(m); stepN(a, 20, O({})); return { pose: stepN(a, 1, O({ grounded: false, vy: -660, vx: 120 * m })) }; });
+  const upTo = (m, vyEnd, grav, vx) => { const { a, O } = ctx(m); stepN(a, 20, O({})); let vy = -660; animUpdate(a, O({ grounded: false, vy, vx }), DT); let r = null; for (let i = 0; i < 200; i++) { vy += grav(vy) * DT; r = animUpdate(a, O({ grounded: false, vy, vx }), DT); if (vyEnd(vy)) break; } return { a, O, r, vy }; };
+  add('RISE', (m) => { const s = upTo(m, (vy) => vy > -380, () => 1900, 120 * m); return { pose: s.r }; });
+  add('APEX', (m) => { const s = upTo(m, (vy) => vy > -30, () => 1900 * 0.75, 120 * m); return { pose: s.r }; });
+  const fall = (m, vyEnd) => { const s = upTo(m, (vy) => vy > -20, () => 1900 * 0.75, 120 * m); let vy = s.vy, r; for (let i = 0; i < 200; i++) { vy += 2500 * DT; r = animUpdate(s.a, s.O({ grounded: false, vy, vx: 120 * m }), DT); if (vy > vyEnd) break; } return { ...s, r, vy }; };
+  add('FALL', (m) => ({ pose: fall(m, 650).r }));
+  add('LAND', (m) => { const s = fall(m, 800); return { pose: animUpdate(s.a, s.O({ grounded: true, vy: 0, vx: 120 * m }), DT) }; });
+  add('REBOUND', (m) => { const s = fall(m, 800); animUpdate(s.a, s.O({ grounded: true, vy: 0 }), DT); return { pose: stepN(s.a, 4, s.O({ grounded: true, vy: 0 })) }; });
+  const wallObs = (m, wallPx, vy, extra) => (c) => c.O({ grounded: false, vy, wall: m, wallEdge: wallPx, ...extra });
+  const gripS = (vy, extra, n = 16) => (m, wallPx) => { const c = ctx(m); stepN(c.a, 20, c.O({})); stepN(c.a, 6, c.O({ grounded: false, vy: 400 })); return { pose: stepN(c.a, n, wallObs(m, wallPx, vy, extra)(c)), wall: true }; };
+  add('GRIP', gripS(30, {})); add('GLIDE', gripS(120, {})); add('CLING', gripS(0, { limpet: true }));
+  add('WALL JUMP', (m, wallPx) => { const c = ctx(m); stepN(c.a, 20, c.O({})); stepN(c.a, 6, c.O({ grounded: false, vy: 400 })); stepN(c.a, 16, wallObs(m, wallPx, 40, {})(c)); return { pose: stepN(c.a, 3, c.O({ grounded: false, vy: -607, vx: -220 * m })), wall: true }; });
+  add('AIR JUMP', (m) => { const c = ctx(m); stepN(c.a, 20, c.O({})); stepN(c.a, 10, c.O({ grounded: false, vy: 500, vx: 60 * m })); return { pose: stepN(c.a, 3, c.O({ grounded: false, vy: -561, vx: 60 * m })) }; });
+  add('SHOOT', (m) => { const c = ctx(m); stepN(c.a, 20, c.O({})); animEvent(c.A, { type: 'shot', player: 0, angle: c.aim }); return { pose: stepN(c.a, 2, c.O({})) }; });
+  add('HIT', (m) => { const c = ctx(m); stepN(c.a, 20, c.O({})); animEvent(c.A, { type: 'hit', player: 0, angle: m > 0 ? Math.PI : 0 }); return { pose: stepN(c.a, 2, c.O({ vx: -90 * m })), flash: true }; });
+  add('BLOCK', (m) => { const c = ctx(m); stepN(c.a, 20, c.O({})); return { pose: stepN(c.a, 8, c.O({ blockLeft: 0.2 })) }; });
+  add('TUMBLE', (m) => { const c = ctx(m); stepN(c.a, 20, c.O({})); animEvent(c.A, { type: 'hit', player: 0, angle: m > 0 ? Math.PI : 0 }); return { pose: stepN(c.a, 9, c.O({ grounded: false, vx: -520 * m, vy: -300 })) }; });
+  add('VICTORY', (m) => { const c = ctx(m); stepN(c.a, 20, c.O({})); let best = null; for (let i = 0; i < 40; i++) { const r = animUpdate(c.a, c.O({ victory: true }), DT); if (!best || r.lift > best.lift) best = r; } return { pose: best }; });
+  add('DEATH', (m) => { const c = ctx(m); stepN(c.a, 20, c.O({})); animEvent(c.A, { type: 'death', player: 0 }); for (let i = 0; i < 4; i++) animUpdate(c.a, c.O({ alive: false }), DT); return { pose: deathPose(c.a), dead: true }; });
+  add('LEDGE', (m) => { const c = ctx(m); stepN(c.a, 30, (i) => c.O({ vx: 300 * m, y: 0 })); let r; r = animUpdate(c.a, c.O({ vx: 300 * m, y: -10 }), DT); r = animUpdate(c.a, c.O({ vx: 300 * m, y: -10 }), DT); return { pose: r }; });
+  return S;
+}
+
+const ONLY = (q.get('only') || '').split(',').filter(Boolean);
+const list = specs().filter((s) => !ONLY.length || ONLY.includes(s.name));
+const rows = Math.ceil(list.length / COLS), W = COLS * CW, H = 2 * rows * CH + 12;
+const canvas = document.getElementById('c');
+canvas.width = W; canvas.height = H; canvas.style.width = W * SCALE + 'px'; canvas.style.height = H * SCALE + 'px';
+const g = canvas.getContext('2d'); use(g);
+R(0, 0, W, H, '#202b2a');
+const SLAB = '#383c39', INKC = '#0e0d0c';
+for (let kind = 0; kind < 2; kind++) {
+  const mir = kind === 0 ? 1 : -1;
+  list.forEach((s, i) => {
+    const col = i % COLS, row = Math.floor(i / COLS), X = col * CW, Y = (kind * rows + row) * CH + 12;
+    R(X, Y, CW, CH, (col + row) & 1 ? '#273433' : '#2b3a38');
+    const ground = Y + CH - 9;
+    let cxp = X + (mir > 0 ? Math.round(CW * 0.46) : Math.round(CW * 0.54));
+    const wallPx = mir > 0 ? X + CW - 8 : X + 8;
+    // render
+    const r = s.fn(mir, wallPx);
+    if (r.wall) cxp = mir > 0 ? Math.round(wallPx - 7.5 * SIZE) : Math.round(wallPx + 7.5 * SIZE);
+    // scene: floor slab (not for wall / air poses it still helps as reference) and the wall
+    R(X, ground + 1, CW, 8, SLAB); R(X, ground + 1, CW, 1, '#7a8074');
+    if (r.wall) { if (mir > 0) { R(wallPx - 1, Y, 9, CH, INKC); R(wallPx, Y, 8, CH, SLAB); } else { R(X, Y, 8, CH, SLAB); R(X + 8, Y, 1, CH, INKC); } }
+    const h = 30 * SIZE, p = { w: 30 * SIZE, h, aim: mir > 0 ? 0 : Math.PI };
+    const pose = r.pose || { ...NEUTRAL_POSE };
+    // y (logical) so that the feet stand on `ground`
+    const yl = (ground + 1) * 2 - h / 2, xl = cxp * 2;
+    const wallAim = r.wall ? (mir > 0 ? Math.PI + 0.45 : -0.45) : null;
+    if (wallAim !== null) p.aim = wallAim;
+    drawSurvivor(kind, p, xl, yl, r.flash ? 1 : 0, pose.sw === undefined ? NEUTRAL_POSE : pose);
+    TXT(s.name, X + 2, Y + 1, '#c9c2a8', 1);
+  });
+}
+TXT((q.get('anim') === '0' ? 'ANIMATIONS OFF ' : '') + 'SIZE ' + SIZE + 'X', 2, 2, '#e9a93c', 1);
+window.__poses = { ready: true, W, H, scale: SCALE };
+</script></body></html>
