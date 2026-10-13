@@ -78,8 +78,8 @@ export function createLobby(root, handlers) {
     }
     if ($('lb-name')) $('lb-name').onkeydown = (e) => { if (e.key === 'Enter') handlers.onCreate(nm()); };
     if ($('lb-cancel')) $('lb-cancel').onclick = () => handlers.onCancel();
-    if ($('lb-copycode')) $('lb-copycode').onclick = async (e) => { const ok = await copyText(view.code); flash(e.currentTarget, ok ? 'COPIED!' : 'COPY FAILED'); };
-    if ($('lb-copylink')) $('lb-copylink').onclick = async (e) => { const ok = await copyText(view.invite); flash(e.currentTarget, ok ? 'LINK COPIED!' : 'COPY FAILED'); };
+    if ($('lb-copycode')) $('lb-copycode').onclick = async (e) => { const btn = e.currentTarget; const ok = await copyText(view.code); flash(btn, ok ? 'COPIED!' : 'COPY FAILED'); };
+    if ($('lb-copylink')) $('lb-copylink').onclick = async (e) => { const btn = e.currentTarget; const ok = await copyText(view.invite); flash(btn, ok ? 'LINK COPIED!' : 'COPY FAILED'); };
   }
   function flash(btn, text) { const old = btn.innerHTML; btn.innerHTML = pxSVG(text, 2); setTimeout(() => { btn.innerHTML = old; }, 1400); }
 
