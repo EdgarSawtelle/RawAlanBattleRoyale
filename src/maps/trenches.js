@@ -8,7 +8,7 @@ import { buildMap, slab, crateStack } from './build.js';
 export default buildMap({
   id: 'trenches', name: 'Trenches', family: 'fortress',
   description: 'Two plateaus over a trench with cover, a barricade, and a plank walk above.',
-  background: 'old-plaza', backgroundVariant: 1, hazardStyle: 'iron',
+  background: 'sunken-metro', backgroundVariant: 0, hazardStyle: 'iron',
   spawn: { x: 150, top: 480 },
   left: {
     solids: [slab(50, 480, 330, 120), slab(400, 400, 110)],          // plateau (a thick block); the first plank

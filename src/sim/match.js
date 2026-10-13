@@ -7,6 +7,7 @@
 //  answer until the question has been answered, and the card ids until the pick).
 //
 //  state.phase (one plain string, shared with sim/world.js):
+//    'ready'      the gate before every round: map shown, nobody can act, waiting for every screen to be ready, then 3-2-1 (world.js)
 //    'playing'    the duel is running (world.js)
 //    'roundEnd'   somebody died; short banner pause (world.js)
 //    'quiz'       the round loser answers one question (no time limit)
@@ -72,7 +73,7 @@ export function matchView(state) {
   const m = state.match, ph = state.phase;
   const revealed = !!m.result;
   return {
-    phase: ph, round: state.round, scores: state.scores, winTarget: m.winTarget, auto: m.auto, loser: m.loser, skipped: m.skipped,
+    phase: ph, round: state.round, scores: state.scores, winTarget: m.winTarget, auto: m.auto, loser: m.loser, skipped: m.skipped, nextMap: state.nextMapId,
     quiz: m.quiz ? { qid: m.quiz.qid, category: m.quiz.category, q: m.quiz.q, answers: m.quiz.answers } : null,
     result: m.result ? { ...m.result } : null,
     offerCount: m.offer.length,

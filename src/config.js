@@ -218,6 +218,13 @@ export const CONFIG = {
     timeLimit: 45,         // seconds of normal play; then SUDDEN DEATH starts
     suddenDeathDps: 2,     // HP lost per second by BOTH players during sudden death at 100 max HP; scaled by max HP (2% of max HP per second). The lower HP percentage dies first; same tick = draw
     suddenDeathBanner: 2.0,// seconds the big "SUDDEN DEATH" banner is shown
+    // READY GATE: before every round the sim waits in the phase 'ready' (nobody moves, shoots or takes damage, hazards and platforms stand still, the round
+    // clock has not started) until every human has reported that it can SHOW the round, then counts down 3-2-1 and goes live. See sim/world.js.
+    gate: true,            // false = rounds start at once (headless sim tests; the practice / online sessions read this when they are created)
+    countdown: 2.7,        // seconds of 3-2-1 once everybody is ready (0 = straight to GO)
+    resumeCountdown: 1.5,  // the short countdown after a reconnect in the middle of a round
+    loadTimeout: 15,       // seconds the title screen waits for the first scene before it lets a queued click through anyway
+    readyTimeout: 20,      // seconds the host waits for a slow side; then it starts anyway if that side is connected and receiving (online only)
   },
 
   // ---- match loop: quiz + card pick (src/sim/match.js) ---------------------------------------------------
@@ -275,7 +282,7 @@ export const CONFIG = {
 
   // ---- online play (src/net) --------------------------------------------------------------------------------
   net: {
-    gameVersion: 4,            // host and client must match, otherwise "refresh the page"
+    gameVersion: 5,            // host and client must match, otherwise "refresh the page"
     roomPrefix: 'rawalan-',    // PeerJS id = prefix + room code (keeps ids unique on the shared public broker)
     codeAlphabet: 'ABCDEFGHJKMNPQRSTUVWXYZ23456789',   // no 0/O, 1/I/L: unambiguous
     codeLength: 5,

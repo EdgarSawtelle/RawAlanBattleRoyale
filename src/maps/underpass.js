@@ -8,7 +8,7 @@ import { buildMap, slab } from './build.js';
 export default buildMap({
   id: 'underpass', name: 'Underpass', family: 'low tunnels',
   description: 'A long floor with a crawl-space tunnel under a roof deck; lifts at the tunnel mouths.',
-  background: 'old-plaza', backgroundVariant: 0, hazardStyle: 'iron',
+  background: 'highway-interchange', backgroundVariant: 1, hazardStyle: 'iron',
   spawn: { x: 160, top: 540 },
   tunnels: [{ x0: 430, x1: 850 }],
   left: {

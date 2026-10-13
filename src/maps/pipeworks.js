@@ -9,7 +9,7 @@ import { buildMap, slab, crateStack } from './build.js';
 export default buildMap({
   id: 'pipeworks', name: 'Pipeworks', family: 'pillars',
   description: 'Pipes of three heights climb towards the middle; the valleys between are wide.',
-  background: 'overgrown-downtown', backgroundVariant: 0, hazardStyle: 'rust',
+  background: 'sunken-metro', backgroundVariant: 0, hazardStyle: 'rust',
   spawn: { x: 130, top: 560 },
   left: {
     solids: [slab(60, 560, 520, 26), slab(240, 496, 64, 64), slab(370, 464, 64, 96), slab(500, 432, 64, 128)],

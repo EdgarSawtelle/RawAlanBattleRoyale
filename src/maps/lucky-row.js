@@ -8,7 +8,7 @@ import { buildMap, slab, stairs, crateRow } from './build.js';
 export default buildMap({
   id: 'lucky-row', name: 'Lucky Row', family: 'floating rows',
   description: 'A low floor, three steps, a sky bridge of crates: shoot it and the middle plank is an island.',
-  background: 'overgrown-downtown', backgroundVariant: 1, hazardStyle: 'rust',
+  background: 'dry-harbour', backgroundVariant: 0, hazardStyle: 'rust',
   spawn: { x: 160, top: 600 },
   left: {
     solids: [slab(50, 600, 260, 26), ...stairs({ x: 310, y: 540, steps: 3, w: 56, rise: 70, base: 626, depth: 150 })],

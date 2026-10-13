@@ -8,7 +8,7 @@ import { buildMap, slab, crateStack } from './build.js';
 export default buildMap({
   id: 'lone-tower', name: 'Lone Tower', family: 'king of the hill',
   description: 'One tall tower, a lift on each side, a crate-covered top to fight over.',
-  background: 'waterfall-forest', backgroundVariant: 1, hazardStyle: 'thorn',
+  background: 'overgrown-downtown', backgroundVariant: 0, hazardStyle: 'thorn',
   spawn: { x: 160, top: 540 },
   left: {
     solids: [slab(60, 540, 300, 26), slab(400, 500, 110)],           // spawn floor; ledge at the foot of the lift

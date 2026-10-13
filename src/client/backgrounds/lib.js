@@ -352,3 +352,34 @@ export function vignetteLayer(col = '#0b1412', maxA = 0.5) {
 export function calmFn(y0 = 105, y1 = 300, low = 0.3) { return y => { if (y < y0 - 25 || y > y1 + 25) return 1; if (y >= y0 && y <= y1) return low; return y < y0 ? low + (1 - low) * (y0 - y) / 25 : low + (1 - low) * (y - y1) / 25; }; }
 
 export const PROF = { on: false, acc: {}, t: 0, mark(l) { if (!this.on) return; if (this.flush) this.flush(); const n = performance.now(); this.acc[l] = (this.acc[l] || 0) + (n - this.t); this.t = n; } };
+
+/* ---------- weather additions ---------- */
+/* Falling snow: o = { n, seed, cols:[far,near], drift, calm(y), speed }. Two depths: 1px flakes (dim) and 2px flakes (bright, fewer). */
+export function snow(g, t, o) {
+  const n = o.n || 80, sp = o.speed || 1;
+  for (let i = 0; i < n; i++) {
+    const near = i % 5 === 0, per = (near ? 4200 : 7600) / sp * (0.8 + hash(i, 1, o.seed) * 0.5), u = ((t / per) + hash(i, 2, o.seed)) % 1;
+    const y = -4 + u * (H + 8), x = hash(i, 3, o.seed) * (W + 120) - 60 + u * (o.drift == null ? 50 : o.drift) * (near ? 1.4 : 1) + Math.sin(u * TAU * (2 + hash(i, 4, o.seed) * 2) + i) * (near ? 9 : 5);
+    const vis = o.calm ? o.calm(y) : 1; if (vis < 0.2) continue;
+    g.globalAlpha = near ? vis * 0.85 : vis * 0.6; g.fillStyle = o.cols[near ? 1 : 0];
+    g.fillRect(Math.round(x), Math.round(y), near ? 2 : 1, near ? 2 : 1);
+  }
+  g.globalAlpha = 1;
+}
+/* Wind-blown streaks (dust, spindrift) racing left to right near the ground: o = { n, seed, col, y0, y1, a, speed } */
+export function streaks(g, t, o) {
+  g.fillStyle = o.col;
+  for (let i = 0; i < o.n; i++) {
+    const sp = (0.6 + hash(i, 1, o.seed) * 0.9) * (o.speed || 1), u = ((t * 0.00012 * sp) + hash(i, 2, o.seed)) % 1;
+    const x = -40 + u * (W + 80), y = o.y0 + hash(i, 3, o.seed) * (o.y1 - o.y0) + Math.sin(u * 14 + i) * 2;
+    const len = 4 + Math.floor(hash(i, 4, o.seed) * 14);
+    g.globalAlpha = o.a * (0.5 + 0.5 * Math.sin(u * Math.PI)); g.fillRect(Math.round(x), Math.round(y), len, 1);
+  }
+  g.globalAlpha = 1;
+}
+/* Distant lightning: returns 0..1 flash strength at time t (deterministic); every `period` ms one storm flash with a double pulse. */
+export function lightning(t, period = 9000, seed = 0) {
+  const slot = Math.floor(t / period), r = hash(slot, 7, seed), start = (0.15 + r * 0.6) * period, dt = (t % period) - start;
+  if (hash(slot, 8, seed) < 0.25) return 0;                    // some periods stay dark
+  if (dt >= 0 && dt < 90) return 1 - dt / 160; if (dt >= 150 && dt < 300) return 0.65 * (1 - (dt - 150) / 150); return 0;
+}

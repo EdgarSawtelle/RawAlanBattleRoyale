@@ -225,5 +225,7 @@ export class GuestSession {
   }
 
   get state() { return this.world.state; }
+  // "My screen can show this round" (the ready gate): reliable, carries the gate id so the host can ignore a stale one.
+  sendReady(id) { if (this.transport && this.status === 'playing') { this.transport.send({ t: T.READY, id }, true); this.readySentId = id; return true; } return false; }
   sendIntent(it) { if (this.transport && this.status === 'playing') this.transport.send({ t: T.INTENT, i: it }, true); }
 }

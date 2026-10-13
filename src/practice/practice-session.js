@@ -5,12 +5,12 @@
 //  It also keeps the previous tick's positions so the renderer can interpolate between ticks.
 // ============================================================================
 import { CONFIG } from '../config.js';
-import { createState, step, STEP } from '../sim/world.js';
+import { createState, step, STEP, markReady } from '../sim/world.js';
 import { createBot, botInput } from './dummy-bot.js';
 
-export function createPracticeSession({ mapId, cards = [[], []], seed = 12345, demo = false, rotate = false, mapLock = null } = {}) {
+export function createPracticeSession({ mapId, cards = [[], []], seed = 12345, demo = false, rotate = false, mapLock = null, gate = false } = {}) {
   const S = {
-    state: createState({ mapId, seed, cards, rotate, mapLock }),
+    state: createState({ mapId, seed, cards, rotate, mapLock, gate }),
     bot: createBot(seed + 1),                       // drives player 1 (the dummy)
     demoBot: demo ? createBot(seed + 2, { reactionTime: 0.15, aimErrorDeg: 4, blockChance: 0.25 }) : null,  // drives player 0 when ?demo=1
     paused: false, stepOnce: false, timeScale: 1,
@@ -36,6 +36,9 @@ export function createPracticeSession({ mapId, cards = [[], []], seed = 12345, d
     S.ticks += 1;
     return step(st, [in0, in1], STEP);
   }
+
+  // The screen reports that it can show this round (the ready gate; the dummy is always ready).
+  S.localReady = (id) => markReady(S.state, 0, id);
 
   // Called once per rendered frame with the real elapsed seconds. Returns { events: [...per tick arrays] }.
   S.update = function (dtReal, getHumanInput, onTickEvents) {

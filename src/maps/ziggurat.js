@@ -8,7 +8,7 @@ import { buildMap, slab, stairs } from './build.js';
 export default buildMap({
   id: 'ziggurat', name: 'Ziggurat', family: 'staircase',
   description: 'A stepped pyramid over the pit, a lift and a sniper perch on each outer side.',
-  background: 'overgrown-downtown', backgroundVariant: 0, hazardStyle: 'rust',
+  background: 'snowbound-town', backgroundVariant: 0, hazardStyle: 'rust',
   spawn: { x: 240, top: 540 },
   left: {
     solids: [

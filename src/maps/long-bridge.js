@@ -9,7 +9,7 @@ import { buildMap, slab, crateRow } from './build.js';
 export default buildMap({
   id: 'long-bridge', name: 'Long Bridge', family: 'bridge',
   description: 'Solid ends, a bridge of crates over a deep pit: shoot it out and the sides are cut apart.',
-  background: 'old-plaza', backgroundVariant: 1, hazardStyle: 'iron',
+  background: 'dry-harbour', backgroundVariant: 0, hazardStyle: 'iron',
   spawn: { x: 130, top: 520 },
   left: {
     solids: [slab(50, 520, 300, 30), slab(250, 440, 60, 80), slab(350, 520, 100)],   // end floor; cover block (80 high); causeway

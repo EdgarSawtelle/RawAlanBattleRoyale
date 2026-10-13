@@ -8,7 +8,7 @@ import { buildMap, slab } from './build.js';
 export default buildMap({
   id: 'cloud-tops', name: 'Cloud Tops', family: 'island chain',
   description: 'Clouds of every width zig-zag up to a wide one in the middle; nothing hangs over anything.',
-  background: 'abandoned-suburb', backgroundVariant: 0, hazardStyle: 'brick',
+  background: 'snowbound-town', backgroundVariant: 1, hazardStyle: 'brick',
   spawn: { x: 150, top: 500 },
   left: {
     solids: [slab(60, 500, 190), slab(310, 450, 110), slab(470, 390, 70), slab(380, 310, 70), slab(250, 230, 90)],

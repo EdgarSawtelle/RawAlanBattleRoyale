@@ -428,3 +428,35 @@ export const drawDeerC = (g, x, gy, o) => cachedAnimal(g, 'deer', x, gy, o, 26, 
 export const drawFoxC = (g, x, gy, o) => cachedAnimal(g, 'fox', x, gy, o, 26, 16, 6, 12, drawFox);
 export const drawGiraffeC = (g, x, gy, o) => cachedAnimal(g, 'giraffe', x, gy, o, 32, 42, 4, 40, drawGiraffe);
 export const drawPigeonC = (g, x, gy, o) => cachedAnimal(g, 'pigeon', x, gy, o, 12, 10, 3, 8, drawPigeon);
+
+/* ---------------- horse (herd animal, wonder moments) ---------------- */
+export function drawHorse(g, x, gy, o) {
+  const c = o.col, dir = o.dir || 1, ph = o.walk == null ? null : o.walk, u = o.head == null ? 0.7 : o.head;
+  const X = dx => dir > 0 ? x + dx : x + 28 - dx;
+  const p = (dx, dy, col) => { g.fillStyle = col; g.fillRect(X(dx), gy + dy, 1, 1); };
+  const run = (dx, dy, w, h, col) => { g.fillStyle = col; for (let j = 0; j < h; j++) g.fillRect(dir > 0 ? x + dx : x + 28 - dx - w + 1, gy + dy + j, w, 1); };
+  const lg = [4, 6, 19, 21];
+  for (let k = 0; k < 4; k++) {
+    let off = 0, lift = 0; if (ph != null) { const s = Math.sin(ph + (k === 1 || k === 2 ? Math.PI : 0)); off = Math.round(s * 2); lift = s > 0.55 ? 2 : 0; }
+    for (let j = 0; j < 9 - lift; j++) { p(lg[k] + (j < 4 ? 0 : off), -9 + j + lift, k % 2 ? c.dark : c.body); }
+    p(lg[k] + off, -1 - lift, c.hoof || c.dark); p(lg[k] + off + 1, -1 - lift, c.hoof || c.dark);
+  }
+  run(3, -17, 19, 7, c.body); run(4, -11, 17, 1, c.belly); run(3, -17, 19, 1, c.back); run(2, -16, 1, 4, c.body); run(21, -17, 2, 4, c.body);
+  // neck + head, lower when grazing
+  const NU = [[21, -17], [22, -19], [23, -21], [24, -23]], NG = [[21, -15], [23, -13], [25, -11], [26, -8]];
+  for (let k = 0; k < 4; k++) { const nx = Math.round(NG[k][0] + (NU[k][0] - NG[k][0]) * u), ny = Math.round(NG[k][1] + (NU[k][1] - NG[k][1]) * u); p(nx, ny, c.body); p(nx + 1, ny, c.body); p(nx, ny + 1, c.body); p(nx - 1, ny + 1, c.mane || c.dark); }
+  const hx = Math.round(26 + (24 - 26) * u), hy = Math.round(-7 + (-25 + 7) * u);
+  p(hx, hy, c.body); p(hx + 1, hy, c.body); p(hx + 2, hy + 1, c.body); p(hx + 3, hy + 1, c.dark); p(hx, hy + 1, c.body); p(hx + 1, hy + 1, c.body); p(hx + 2, hy + 2, c.body); p(hx + 3, hy + 2, c.dark); p(hx, hy - 1, c.dark);
+  if (c.blaze) p(hx + 1, hy + 1, c.blaze);
+  // tail, swishing
+  const sw = ph != null ? Math.round(Math.sin(ph * 0.5) * 1.4) : 0;
+  for (let q = 0; q < 8; q++) { p(2 - Math.round(q * 0.15) - (q > 5 ? 1 : 0) + (q > 3 ? sw : 0), -16 + q, c.mane || c.dark); }
+}
+export const drawHorseC = (g, x, gy, o) => cachedAnimal(g, 'horse', x, gy, o, 36, 34, 4, 31, drawHorse);
+
+/* ---------------- shipping container ---------------- */
+export function container(g, x, y, w, h, col, seed) {
+  R(x, y, w, h, col[1]); R(x, y, w, 1, col[0]); R(x, y + h - 1, w, 1, col[2]); R(x, y, 1, h, col[2]); R(x + w - 1, y, 1, h, col[0]);
+  for (let i = 3; i < w - 2; i += 3) R(x + i, y + 1, 1, h - 2, hash(i, seed, 2) > 0.5 ? col[2] : mix(col[1], col[2], 0.5));
+  for (let k = 0; k < Math.max(2, w >> 2); k++) { const rx = x + 1 + Math.floor(hash(k, seed, 5) * (w - 2)), ry = y + 1 + Math.floor(hash(k, seed, 6) * (h - 2)); P(rx, ry, '#7b4a30'); if (hash(k, seed, 7) > 0.5) P(rx, ry + 1, '#7b4a30'); }
+}

@@ -9,6 +9,7 @@
 //  Snapshot slabs `sl`: [[id, x, y, w, h, hp, maxHp, life, owner], ...] (temporary blocks conjured by cards; every snapshot repeats the live ones).
 //  `ql` is how many client input frames the host has queued (the client speeds up / slows down its input clock a little to keep it near the cushion).
 //  `ack` is the sequence number of the last client input frame the host has simulated (one frame = one tick), `rt` the round tick after it.
+//  Snapshot `rg`: the ready gate (phase 'ready' only): [id, countdown s, host ready, client ready, waited s, resume, countdown length s].
 //  Snapshot `sq`: the client's own current shot / block stats (SQ_KEYS), for the local echo of its shots and blocks (echo.js).
 //  Snapshot bullet array: [id, x, y, vx, vy, r, owner, style]            style: 0 amber, 1 pale, 2 ember, 3 steel, 4 gold, 5 thorn
 //  Snapshot damaged-block list `bk`: [[id, hp], ...] (hp 0 = destroyed); every snapshot repeats it, so a lost
@@ -41,6 +42,8 @@ export function shotStats(p) { return [...SQ_KEYS.map((k) => (SQ_EXACT.has(k) ? 
 export function buildSnap(state, seq, ack, mvs, ql = 0, extra = null) {
   return {
     tick: state.tick, seq, ack, mvs, ql, ...(extra || {}), q: moveState(state.players[1]), sq: shotStats(state.players[1]),
+    // rg (only in the phase 'ready'): the gate [id, countdown seconds left (-1 = still waiting), host ready, client ready, seconds waited, resume]
+    ...(state.phase === 'ready' ? { rg: [state.ready.id, r3(state.ready.cd), state.ready.got[0] ? 1 : 0, state.ready.got[1] ? 1 : 0, r1(state.ready.waited), state.ready.resume ? 1 : 0, r3(state.ready.resume ? CONFIG.round.resumeCountdown : CONFIG.round.countdown)] } : {}),
     // (ack = the last client input frame simulated; q is player 1's movement state after it)
     ph: state.phase, rd: state.round, rt: state.roundTick, rtm: r2(state.roundTime), sd: state.suddenDeath ? 1 : 0,
     sc: state.scores.slice(), res: state.result ? state.result.winner : null,
@@ -76,7 +79,7 @@ export class ClientWorld {
     const mkp = (i) => ({ index: i, x: 0, y: 0, vx: 0, vy: 0, w: 30, h: 30, aim: 0, facing: 1, alive: true, hp: 100, ammo: 5, reloadLeft: 0, blockLeft: 0, blockCd: 0, grounded: false, cards: [],
       stats: { maxHp: 100, magazine: 5, reloadTime: 2, blockCooldown: 4, blockWindow: 0.3 } });
     return {
-      tick: 0, roundTick: 0, roundTime: 0, suddenDeath: false, phase: 'playing', round: 1, scores: [0, 0], result: null, mapId: null,
+      tick: 0, roundTick: 0, roundTime: 0, suddenDeath: false, phase: 'playing', round: 1, nextMap: null, ready: { id: 0, got: [false, false], cd: -1, waited: 0, resume: false }, scores: [0, 0], result: null, mapId: null,
       players: [mkp(0), mkp(1)], bullets: [], blocks: [], events: [], cheats: { invulnerable: [false, false] },
       match: { winTarget: CONFIG.match.winTarget, auto: [false, false], loser: -1, quiz: null, result: null, offer: [], removed: [], skipped: false, dummy: null, timer: 0, again: [false, false], pickedCard: null, used: [] },
     };
@@ -86,7 +89,7 @@ export class ClientWorld {
   applyView(v) {
     const s = this.state, m = s.match;
     this.mvVersion = v.v;
-    s.phase = v.phase; s.round = v.round; s.scores = v.scores.slice();
+    s.phase = v.phase; s.round = v.round; s.scores = v.scores.slice(); s.nextMap = v.nextMap || null;
     s.result = v.winner >= 0 || v.phase === 'matchEnd' ? { winner: v.winner } : s.result;
     m.winTarget = v.winTarget; m.loser = v.loser; m.skipped = v.skipped; m.again = v.again || [false, false];
     m.quiz = v.quiz ? { ...v.quiz, why: '' } : null;
@@ -174,6 +177,7 @@ export class ClientWorld {
     else { extra = Math.max(0, Math.min(CONFIG.net.extrapolateMax * CONFIG.tickRate, rt - A.tick)); if (extra > 0) this.stats.extrapolated++; }
     const dtA = Bn ? (Bn.tick - A.tick) / CONFIG.tickRate : 0;
 
+    if (cur.rg) s.ready = { id: cur.rg[0], cd: cur.rg[1], got: [!!cur.rg[2], !!cur.rg[3]], waited: cur.rg[4], resume: !!cur.rg[5], total: cur.rg[6] };
     s.tick = cur.tick; s.round = cur.rd; s.roundTime = cur.rtm; s.suddenDeath = !!cur.sd; s.scores = cur.sc.slice();
     s.mapId = cur.map;
     if (s.phase === 'playing' || s.phase === 'roundEnd') s.result = cur.res === null ? null : { winner: cur.res };
@@ -189,6 +193,7 @@ export class ClientWorld {
       P.stats.maxHp = c[14]; P.stats.magazine = c[15]; P.stats.reloadTime = c[16]; P.stats.blockCooldown = c[17];
     }
     // round tick (platforms / saws): interpolate unless the round restarted
+    if (cur.ph === 'ready') extra = 0;                                       // the gate: the world stands still, nothing is extrapolated
     s.roundTick = Bn && Bn.rt >= A.rt ? Math.floor(lerp(A.rt, Bn.rt, t)) : Math.floor(cur.rt + extra);
     const alpha = Bn && Bn.rt >= A.rt ? lerp(A.rt, Bn.rt, t) - Math.floor(lerp(A.rt, Bn.rt, t)) : 1;
     // bullets by id

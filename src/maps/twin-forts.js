@@ -8,7 +8,7 @@ import { buildMap, slab, crateStack } from './build.js';
 export default buildMap({
   id: 'twin-forts', name: 'Twin Forts', family: 'fortress',
   description: 'Two forts with a front wall and a roof, a small island between them, a saw in the pit.',
-  background: 'overgrown-downtown', backgroundVariant: 0, hazardStyle: 'rust',
+  background: 'old-plaza', backgroundVariant: 1, hazardStyle: 'rust',
   spawn: { x: 180, top: 540 },
   left: {
     solids: [slab(50, 540, 470, 26), slab(300, 440, 60, 100), slab(90, 380, 210)],     // yard; front wall; roof over the spawn

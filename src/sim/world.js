@@ -18,7 +18,7 @@ import { getHazards, solidHazardColliders, stepHazards } from './hazards.js';
 export const STEP = 1 / CONFIG.tickRate;
 
 // ---- creating / resetting ---------------------------------------------------------------------------
-export function createState({ mapId, seed = 1, cards = [[], []], rotate = false, mapLock = null } = {}) {
+export function createState({ mapId, seed = 1, cards = [[], []], rotate = false, mapLock = null, gate = false } = {}) {
   const state = {
     tick: 0,                // total ticks since creation
     roundTick: 0,           // ticks since the round started (drives moving platforms)
@@ -29,7 +29,11 @@ export function createState({ mapId, seed = 1, cards = [[], []], rotate = false,
     rotate: !!rotate && !mapLock,   // map rotation: a new map every round (see drawMap); off for tests and pinned maps
     mapLock: mapLock || null,       // pinned map (debug panel / ?map=): wins over the rotation
     mapBag: [],                     // the maps not yet played in the current shuffle
-    phase: 'playing',       // 'playing' | 'roundEnd' | 'quiz' | 'quizReveal' | 'cardPick' | 'dummyTurn' | 'matchEnd' (see sim/match.js)
+    phase: 'playing',       // 'ready' | 'playing' | 'roundEnd' | 'quiz' | 'quizReveal' | 'cardPick' | 'dummyTurn' | 'matchEnd' (see sim/match.js)
+    gate: !!gate,           // true: every round starts in the phase 'ready' (see enterReady); false: rounds are live at once (sim tests)
+    ready: { id: 0, got: [false, false], cd: -1, waited: 0, resume: false, back: null, forced: false },   // the ready gate (phase 'ready'): see enterReady
+    readySeq: 0,            // counter for the gate ids (a ready report must carry the id of THIS gate)
+    nextMapId: null,        // the map of the NEXT round, decided when this round ends (so every screen can prepare its scene during the quiz and card pick)
     overTimer: 0,
     result: null,           // { winner: 0 | 1 | -1 (draw) } after a round ended
     roundTime: 0,           // seconds of live play this round (drives the round clock / sudden death)
@@ -54,6 +58,12 @@ export function createState({ mapId, seed = 1, cards = [[], []], rotate = false,
 
 // MAP ROTATION: the maps are played in a shuffled order; all of them appear before any repeats (a new shuffle never starts
 // with the map just played). Seeded with the match RNG, so the host's choice is plain state that the clients simply receive.
+export function planNextMap(state) {
+  state.nextMapId = state.rotate && !state.mapLock ? drawMap(state) : null;
+  return state.nextMapId;
+}
+function takeNextMap(state) { if (state.rotate && !state.mapLock) state.mapId = state.nextMapId || drawMap(state); state.nextMapId = null; }
+
 export function drawMap(state) {
   if (state.mapLock) return state.mapLock;
   if (!state.mapBag.length) {
@@ -78,6 +88,49 @@ export function startRound(state) {
   });
   for (let i = 0; i < 2; i++) resetPlayerForRound(state.players[i], map.spawns[i]);
   emit(state, 'roundStart', { round: state.round, mapId: state.mapId });
+  if (state.gate) enterReady(state);
+}
+
+// ---- the ready gate -------------------------------------------------------------------------------------------------------
+// Every round (the first one, after a quiz and card pick, after a draw, a rematch) begins in the phase 'ready': the map is chosen and shown, the
+// players stand at their spawns, and NOTHING runs: no input, no bullets, no hazards or moving platforms (roundTick stays 0), no round clock, no damage.
+// Each human reports ready (markReady) when its screen can really show this round (scene built, state received, frames drawn, tab visible; a bot is
+// always ready). Then the countdown runs (host-timed, sent as state) and the round goes live. A report carries the id of the gate, so a stale one
+// from the previous round cannot start this one. After a reconnect in the middle of a round the same gate is used (resumeGate), with a short countdown.
+export function enterReady(state, keep = null) {
+  const r = state.ready;
+  r.id = ++state.readySeq; r.got = [!!state.match.auto[0], !!state.match.auto[1]]; r.cd = -1; r.waited = 0; r.forced = false;
+  r.resume = !!(keep && keep.resume); r.back = keep ? keep.back : null;
+  state.phase = 'ready';
+}
+// A fresh gate in the middle of a round (a player came back after a disconnect): the round is kept exactly as it is, frozen, until both are ready again.
+export function resumeGate(state) {
+  if (!state.gate) return false;
+  if (state.phase === 'ready') { enterReady(state, { resume: state.ready.resume, back: state.ready.back }); return true; }
+  if (state.phase === 'playing' || state.phase === 'roundEnd') { enterReady(state, { resume: true, back: state.phase }); return true; }
+  return false;                                                // quiz, card pick, match end: frozen anyway
+}
+export function markReady(state, player, id) {
+  const r = state.ready;
+  if (state.phase !== 'ready' || id !== r.id || (player !== 0 && player !== 1)) return false;
+  r.got[player] = true;
+  return true;
+}
+// The host gives up waiting for a slow side (it is connected and receiving, just not ready): everybody counts as ready.
+export function forceReady(state) { if (state.phase === 'ready') { state.ready.got = [true, true]; state.ready.forced = true; } }
+export function readyTotal(state) { return state.ready.resume ? CONFIG.round.resumeCountdown : CONFIG.round.countdown; }
+function tickReady(state, dt) {
+  const r = state.ready;
+  if (r.cd < 0) {
+    r.waited += dt;
+    if (!(r.got[0] && r.got[1])) return;
+    r.cd = readyTotal(state);
+  } else r.cd -= dt;
+  if (r.cd <= 0) {                                              // GO
+    state.phase = r.back || 'playing'; r.back = null; r.cd = -1;
+    emit(state, 'roundGo', { round: state.round, resume: r.resume });
+    r.resume = false;
+  }
 }
 
 export function loadMap(state, mapId) {
@@ -122,13 +175,13 @@ export function collidersFor(mapId, roundTick, blocks) {
 const NEUTRAL = { left: false, right: false, jump: false, jumpPressed: false, shoot: false, block: false, aim: 0 };
 
 // Start the next round (after a draw, or after the loser took a card). Cards are kept.
-export function nextRound(state) { state.round += 1; if (state.rotate) state.mapId = drawMap(state); startRound(state); }
+export function nextRound(state) { state.round += 1; takeNextMap(state); startRound(state); }
 
 // "Play again": scores, builds and the used-question list are reset; round 1 starts.
 export function newMatch(state) {
   state.scores = [0, 0]; state.round = 1; state.match.used = [];
   for (const p of state.players) setPlayerCards(p, []);
-  if (state.rotate) state.mapId = drawMap(state);
+  takeNextMap(state);
   startRound(state);
 }
 
@@ -152,6 +205,7 @@ export function intent(state, player, it) {
 
 export function step(state, inputs, dt = STEP) {
   state.events = [];
+  if (state.phase === 'ready') { state.tick += 1; tickReady(state, dt); return state.events; }   // the gate: nothing else runs
   // quiz / card pick / dummy turn / match end: the duel is frozen, only the match loop runs
   if (state.phase !== 'playing' && state.phase !== 'roundEnd') {
     state.tick += 1;
@@ -200,6 +254,7 @@ export function step(state, inputs, dt = STEP) {
       state.overTimer = CONFIG.round.endDelay;
       const winner = dead.length === 2 ? -1 : state.players.findIndex((p) => p.alive);   // both dead on the same tick = draw
       state.result = { winner };
+      planNextMap(state);                                                                // the next map is known from now on: every screen can build its scene during the quiz
       if (winner >= 0) state.scores[winner] += 1;                                       // a draw scores nothing
       emit(state, 'roundEnd', { winner });
       for (let i = 0; i < 2; i++) fireHook(state, 'onRoundEnd', i, { won: winner === i });

@@ -8,7 +8,7 @@ import { buildMap, slab, stairs } from './build.js';
 export default buildMap({
   id: 'flag-stairs', name: 'Flag Stairs', family: 'staircase',
   description: 'Two big staircases face each other across a pit; a plank and a lift in the middle.',
-  background: 'abandoned-suburb', backgroundVariant: 0, hazardStyle: 'brick',
+  background: 'sunken-metro', backgroundVariant: 1, hazardStyle: 'brick',
   spawn: { x: 170, top: 560 },
   left: {
     solids: [slab(50, 560, 260, 26), ...stairs({ x: 310, y: 490, steps: 4, w: 56, rise: 70, base: 586 })],

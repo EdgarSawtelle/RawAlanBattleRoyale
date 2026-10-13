@@ -8,10 +8,10 @@
 //  timer in the browser, a virtual clock in tests) - this class never sets timers itself.
 // ============================================================================
 import { CONFIG } from '../config.js';
-import { createState, step, intent, STEP } from '../sim/world.js';
+import { createState, step, intent, STEP, enterReady, resumeGate, markReady, forceReady } from '../sim/world.js';
 import { matchView } from '../sim/match.js';
 import { buildSnap } from './snapshot.js';
-import { T, VERSION, decodeFrame, validInputMsg, validIntent } from './protocol.js';
+import { T, VERSION, decodeFrame, validInputMsg, validIntent, validReady } from './protocol.js';
 import { netQuality, hostIsSlow } from './quality.js';
 
 const STEP_MS = 1000 / CONFIG.tickRate;
@@ -26,8 +26,9 @@ export class HostSession {
     this.clock = opts.clock;
     this.role = 'host'; this.me = 0;
     this.names = [opts.name || CONFIG.player.names[0], CONFIG.player.names[1]];
-    this.state = createState({ mapId: opts.mapId, seed: opts.seed ?? 1, rotate: opts.rotate !== false, mapLock: opts.mapLock || null });
+    this.state = createState({ mapId: opts.mapId, seed: opts.seed ?? 1, rotate: opts.rotate !== false, mapLock: opts.mapLock || null, gate: opts.gate ?? CONFIG.round.gate });
     this.state.match.auto = [false, false];                 // two humans: nobody is a bot
+    if (this.state.gate) enterReady(this.state);            // (the gate was opened by createState with a bot's readiness: open it again for two humans)
     this.status = 'waiting';                                // waiting | playing | paused | ended
     this.transport = null; this.token = null;
     this.paused = false; this.stopAfterTicks = Infinity;    // same test hooks as the practice session
@@ -75,6 +76,7 @@ export class HostSession {
     this._adopt(tr);
     this.status = 'playing';
     this.lastTickAt = this.clock.now(); this.lastAdvance = null;
+    if (this.state.gate) resumeGate(this.state);             // a new gate (the opponent has to show the round too): the first round of the match waits for both screens
     tr.send({ t: T.WELCOME, v: VERSION, you: 1, hostName: this.names[0], token: this.token, rejoin: false, names: this.names }, true);
     this._sendFull();
     this._notify('playing', 'Opponent joined');
@@ -83,6 +85,7 @@ export class HostSession {
   _rejoin(tr, msg) {
     this._adopt(tr);
     this.status = 'playing'; this.lastAdvance = null; this.lastTickAt = this.clock.now();
+    if (this.state.gate) resumeGate(this.state);             // back in the middle of a round: the same gate again (short countdown), not straight into live fire
     tr.send({ t: T.WELCOME, v: VERSION, you: 1, hostName: this.names[0], token: this.token, rejoin: true, names: this.names }, true);
     this._sendFull();
     this._notify('playing', 'Opponent is back');
@@ -110,6 +113,7 @@ export class HostSession {
         this._viewMaybe(); this._flush();
         break;
       }
+      case T.READY: if (validReady(m)) markReady(this.state, 1, m.id); break;
       case T.PING: this.transport.send({ t: T.PONG, ts: m.ts }, false); break;
       case T.PONG: { const rtt = this.clock.now() - m.ts; this.jitter += (Math.abs(rtt - (this.ping === null ? rtt : this.ping)) - this.jitter) / 8; this.ping = this.ping === null ? rtt : this.ping * 0.8 + rtt * 0.2; break; }
       case T.BYE: this._end('Your opponent left the game.'); break;
@@ -217,6 +221,7 @@ export class HostSession {
     const st = this.state;
     this.prev = { players: st.players.map((p) => ({ x: p.x, y: p.y })), bullets: new Map(st.bullets.map((b) => [b.id, { x: b.x, y: b.y }])) };
     this._measure(now);
+    if (st.phase === 'ready') this._gateTimeout(now);
     st.lag = [0, this.lagTicks];                                 // bullets of the client are tested against where the host player was (bounded rewind, see sim/bullet.js)
     const live = st.phase === 'playing' || st.phase === 'roundEnd';
     const in0 = live ? (this.opts.getLocalInput ? this.opts.getLocalInput(st.players[0]) : NEUTRAL) : NEUTRAL;
@@ -230,6 +235,17 @@ export class HostSession {
     }
     this._flush();
   }
+
+  // The host does not wait for ever: after config.round.readyTimeout seconds a slow side that is still connected and receiving state counts as ready
+  // (its background may be the old picture). A side that is gone is the disconnect handling's business (the match pauses).
+  _gateTimeout(now) {
+    const r = this.state.ready;
+    if (r.cd >= 0 || r.waited < CONFIG.round.readyTimeout) return;
+    const guestAlive = !!this.transport && now - this.lastRx < 3000;
+    if (guestAlive) forceReady(this.state);
+  }
+  // The host's own screen reports that it can show this round (id from state.ready).
+  localReady(id) { return markReady(this.state, 0, id); }
 
   // Once a second: the host's real tick rate, the input loss, the snapshot rate (60 Hz while the link is good, 30 Hz when it is
   // slow or lossy or the host machine is struggling) and the lag compensation window.

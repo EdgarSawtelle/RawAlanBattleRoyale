@@ -8,7 +8,7 @@ import { buildMap, slab, stairs } from './build.js';
 export default buildMap({
   id: 'the-peak', name: 'The Peak', family: 'staircase',
   description: 'A five-step mountain with a narrow apex; edge lifts lead to sniper perches.',
-  background: 'waterfall-forest', backgroundVariant: 0, hazardStyle: 'thorn',
+  background: 'snowbound-town', backgroundVariant: 0, hazardStyle: 'thorn',
   spawn: { x: 225, top: 590 },
   left: {
     solids: [slab(130, 590, 190, 26), slab(130, 330, 110), ...stairs({ x: 320, y: 520, steps: 5, w: 58, rise: 68, base: 640, depth: 190 })],

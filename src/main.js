@@ -14,6 +14,8 @@
 //    ?scenario=glide|climb|arc    physics pictures: wall glide, one-wall climb (&stopAfter=N), a stream of bullets along one arc
 //    ?menu=1             open the Esc menu (help) right away      ?rotate=1   keep the map rotation on in the test URLs   ?prebuild=0   do not pre-build the other maps' backdrops
 //    ?anim=0             no character animations (rigid sprites)    ?debug=1            open the debug panel              ?hitboxes=1     show hitboxes
+//    ?gate=1             (test URLs only) use the ready gate: 3-2-1 before the round     ?countdown=0|n  length of that countdown in seconds (0 = none)
+//    ?slowbg=4000        pretend every scene needs 4 s to build (&slowbgonly=<scene id>): tests the gate / the loading state     ?gatelog=1  log every frame's gate state into window.__gateLog
 //    ?cards=a,b          cards for you (ids)               ?dcards=a,b     cards for the dummy
 //    ?map=id             start on this map                 ?dummy=active|passive|off
 //    ?seed=n             RNG seed                          ?stopAfter=N    freeze the sim after N ticks
@@ -35,7 +37,8 @@ import { drawScreen, screenActive, hitIntent, keyIntent, getHover, nextDummyStep
 import { createPracticeSession } from './practice/practice-session.js';
 import { createRenderer } from './client/render.js';
 import { createFx, fxEvents, fxUpdate } from './client/fx.js';
-import { drawHud, drawPing, drawHostSlow, drawNetBanner, drawToast, drawMapBanner, drawHint } from './client/hud.js';
+import { drawHud, drawPing, drawHostSlow, drawNetBanner, drawToast, drawMapBanner, drawHint, drawReady } from './client/hud.js';
+import { sceneReady, prepareScene } from './client/bgready.js';
 import { createInput } from './client/input.js';
 import { createDebugPanel } from './client/debug-panel.js';
 import { createLobby } from './client/lobby.js';
@@ -46,7 +49,8 @@ import { getBackgroundStatus } from './client/background.js';
 
 const params = new URLSearchParams(location.search);
 if (params.get('anim') === '0') CONFIG.render.animations.enabled = false;   // ?anim=0: the old rigid sprites (to compare the feel)
-if (params.get('predict') === '0') CONFIG.net.predictOwnMovement = false;   // ?predict=0: see the host's view of yourself (to compare the feel)
+if (params.get('predict') === '0') CONFIG.net.predictOwnMovement = false;
+if (params.get('countdown') !== null && params.get('countdown') !== '') CONFIG.round.countdown = Math.max(0, Number(params.get('countdown')) || 0);   // ?countdown=0: no 3-2-1 before a round (tests); ?countdown=6 for pictures   // ?predict=0: see the host's view of yourself (to compare the feel)
 const list = (k) => (params.get(k) ? params.get(k).split(',').filter(Boolean) : []);
 const DEFAULT_NAMES = [...CONFIG.player.names];
 
@@ -75,6 +79,7 @@ input.gate = () => {                               // may the keyboard / mouse c
 let toast = null;                                  // { text, icon, tint, until }
 const BANNER_MS = Number(params.get('bannerms')) || 3200;      // how long the map name stays (?bannerms=60000 for pictures)
 let mapBanner = null;                              // { round, name, from } the map name shown at the start of a round
+// (with the ready gate the map name is part of the gate screen, see hud.js drawReady; this timed banner is only for ungated rounds)
 function showMapBanner(mapId, round) { try { mapBanner = { round, name: getMap(mapId).name, from: performance.now() }; } catch (e) { mapBanner = null; } }
 
 function fit() {
@@ -105,6 +110,7 @@ const pinnedMap = () => params.get('map') || (SCEN === 'glide' || SCEN === 'clim
 function makePractice(forLobby) {
   const pin = forLobby ? MAPS[0].id : pinnedMap();
   const s = createPracticeSession({
+    gate: !forLobby && (urlStart ? params.get('gate') === '1' : CONFIG.round.gate),
     mapId: pin || undefined, mapLock: pin || null, rotate: !pin,
     cards: [list('cards'), list('dcards')],
     seed: Number(params.get('seed')) || (urlStart ? 12345 : Date.now() % 100000),
@@ -207,7 +213,7 @@ function enterPractice() {
   mode = { kind: 'practice', session: makePractice(), me: 0 };
   applyTestParams(mode.session);
   resetVisuals(); lobby.hide();
-  showMapBanner(mode.session.state.mapId, mode.session.state.round);
+  if (!mode.session.state.gate) showMapBanner(mode.session.state.mapId, mode.session.state.round);
 }
 
 function leaveNetwork() {
@@ -244,7 +250,7 @@ function startCreate() {
     onReady: (code) => { lobby.showWaiting(code, inviteLink(code)); },
     onError: (err) => { room = null; toLobby(describeError(err)); },
     onStatus: (status, text) => {
-      if (status === 'playing' && room) { applyNames(room.host.names); resetVisuals(); mode = { kind: 'host', session: room.host, me: 0 }; lobby.hide(); showMapBanner(room.host.state.mapId, room.host.state.round); }
+      if (status === 'playing' && room) { applyNames(room.host.names); resetVisuals(); mode = { kind: 'host', session: room.host, me: 0 }; lobby.hide(); if (!room.host.state.gate) showMapBanner(room.host.state.mapId, room.host.state.round); }
     },
     onEnded: (reason) => { if (room) toLobby(reason === 'left' ? '' : reason); },
   });
@@ -262,7 +268,7 @@ function startJoin(code, name) {
       if (status === 'connecting') lobby.setStatus('Connecting (' + text + ')...');
       if (status === 'playing' && joined) {
         applyNames(joined.guest.names); try { sessionStorage.setItem('rab-token-' + code, joined.guest.token); } catch (e) { /* ignore */ }
-        if (mode.kind !== 'guest') { resetVisuals(); mode = { kind: 'guest', session: joined.guest, me: 1 }; lobby.hide(); showMapBanner(joined.guest.state.mapId, joined.guest.state.round); }
+        if (mode.kind !== 'guest') { resetVisuals(); mode = { kind: 'guest', session: joined.guest, me: 1 }; lobby.hide(); }
       }
     },
     onEnded: (reason) => { if (joined) toLobby(reason === 'left' ? '' : reason); },
@@ -270,12 +276,24 @@ function startJoin(code, name) {
   joined = j;
 }
 
+// ---- first load: nothing starts before the first scene is built (a click meanwhile is queued, not started behind the loading state) ---------------
+let loaded = urlStart && params.get('gate') !== '1', queued = null;
+const loadT0 = performance.now();
+const loadReady = () => document.readyState === 'complete' && sceneReady(MAPS[0].id);
+function afterLoad(fn) { if (loaded) { fn(); return; } queued = fn; lobby.setStatus('Loading... it starts as soon as everything is ready.'); }
+function checkLoaded() {
+  if (loaded || !(loadReady() || performance.now() - loadT0 > CONFIG.round.loadTimeout * 1000)) return;
+  loaded = true; lobby.setLoading(false);
+  if (queued) { const f = queued; queued = null; lobby.setStatus(''); f(); }
+}
+
 const lobby = createLobby(lobbyEl, {
-  onPractice: () => enterPractice(),
-  onCreate: () => startCreate(),
-  onJoin: (code) => startJoin(code, lobby.name),
-  onCancel: () => toLobby(''),
+  onPractice: () => afterLoad(() => enterPractice()),
+  onCreate: () => afterLoad(() => startCreate()),
+  onJoin: (code) => afterLoad(() => startJoin(code, lobby.name)),
+  onCancel: () => { queued = null; toLobby(''); },
 });
+lobby.setLoading(!loaded);
 
 // ---- intents from clicks / keys on the between-rounds screens (the UI never edits the match itself) ----
 function currentState() { const m = mode; return m.kind === 'guest' ? m.session.state : m.session.state; }
@@ -330,7 +348,7 @@ window.addEventListener('keydown', (e) => { if (CONFIG.debug.toggleKeys.includes
 
 // ---- toast: "EMBER TOOK PINBALL" for both players -----------------------------------------------------------------------------------------------
 function noteEvents(events) {
-  for (const e of events) if (e.type === 'roundStart') showMapBanner(e.mapId, e.round);
+  for (const e of events) if (e.type === 'roundStart' && mode.kind !== 'guest' && !currentState().gate) showMapBanner(e.mapId, e.round);
   for (const e of events) if (e.type === 'cardPicked') {
     const card = CARDS_BY_ID[e.cardId]; if (!card) continue;
     toast = { text: CONFIG.player.names[e.player] + ' TOOK ' + card.name.toUpperCase(), icon: card.icon, tint: e.player === 0 ? '#c77c44' : '#7bbfae', until: performance.now() + 3200 };
@@ -342,13 +360,35 @@ if (urlStart) { enterPractice(); }
 else {
   lobby.showMenu();
   const code = codeFromHash(location.hash);
-  if (code) { lobby.prefillCode(code); setTimeout(() => startJoin(code, lobby.name), 100); }
+  if (code) { lobby.prefillCode(code); setTimeout(() => afterLoad(() => startJoin(code, lobby.name)), 100); }
 }
-window.addEventListener('hashchange', () => { const c = codeFromHash(location.hash); if (c && mode.kind === 'lobby') { lobby.prefillCode(c); startJoin(c, lobby.name); } });
+window.addEventListener('hashchange', () => { const c = codeFromHash(location.hash); if (c && mode.kind === 'lobby') { lobby.prefillCode(c); afterLoad(() => startJoin(c, lobby.name)); } });
 
 if (params.get('warmup') && mode.kind === 'practice') {
   const n = Number(params.get('warmup'));
   for (let i = 0; i < n; i++) mode.session.update(STEP, (p) => input.sample(p), (events) => { fxEvents(fx, events); fxUpdate(fx, STEP); });
+}
+
+// ---- the ready gate, client side ---------------------------------------------------------------------------------------------------------
+// Before every round the sim waits in the phase 'ready' until each human screen reports that it can SHOW the round: the scene of THIS map is built, the
+// state of THIS gate (its id) has arrived, a few frames of it have been drawn and the tab is visible. The report carries the gate id (a stale one is ignored).
+const rdy = { id: -1, frames: 0, sent: -1 };
+const gateLog = params.get('gatelog') === '1' ? (window.__gateLog = []) : null;       // ?gatelog=1: one line per drawn frame (phase, countdown, hp, positions): the browser tests read it
+function readyInfo(state, m) { const r = state.ready; return { me: m.me, mineReady: !!(r.got[m.me] || rdy.sent === r.id), sceneOk: sceneReady(state.mapId), total: r.total || (r.resume ? CONFIG.round.resumeCountdown : CONFIG.round.countdown) }; }
+const preparedFor = new Set();
+function gateWork(state, S, m) {
+  // the next round's scene is built during the quiz and card pick (the next map is decided when a round ends)
+  const nm = state.nextMapId || state.nextMap;
+  if (nm && !preparedFor.has(state.round + ':' + nm)) { preparedFor.add(state.round + ':' + nm); prepareScene(nm); }
+  if (state.phase !== 'ready' || !state.ready || !(state.ready.id > 0)) { rdy.id = -1; rdy.frames = 0; return; }
+  const r = state.ready;
+  if (r.id !== rdy.id) { rdy.id = r.id; rdy.frames = 0; }
+  if (document.visibilityState !== 'visible') { rdy.frames = 0; return; }
+  rdy.frames++;
+  // (a scene that never finishes cannot hold the game for ever: this screen gives up on it a little before the host would)
+  if (rdy.sent === r.id || rdy.frames < 3 || !(sceneReady(state.mapId) || r.waited >= CONFIG.round.readyTimeout * 0.9)) return;
+  if (m.kind === 'guest') { if (S.status === 'playing' && S.sendReady(r.id)) rdy.sent = r.id; }
+  else if (S.localReady && S.localReady(r.id)) rdy.sent = r.id;
 }
 
 // ---- main loop ---------------------------------------------------------------------------------------------------------------------------------------------
@@ -380,8 +420,10 @@ function frame(now) {
   const online = m.kind === 'host' || m.kind === 'guest';
   renderer.me = m.kind === 'lobby' ? -1 : m.me;
   renderer.draw(state, prev, alpha, fx);
+  if (m.kind === 'lobby') checkLoaded(); else { gateWork(state, S, m); if (gateLog && gateLog.length < 6000) gateLog.push({ t: Math.round(now), ph: state.phase, cd: state.ready ? Math.round(state.ready.cd * 1000) / 1000 : null, rs: state.ready ? !!state.ready.resume : false, id: state.ready ? state.ready.id : 0, hp: state.players.map((p) => Math.round(p.hp * 10) / 10), x: state.players.map((p) => Math.round(p.x * 10) / 10), b: state.bullets.length, rt: state.roundTick, rd: state.round }); }
   if (m.kind !== 'lobby') {
     if (!screenActive(state)) { drawHud(renderer.g, state); drawHint(renderer.g); }
+    if (state.phase === 'ready') drawReady(renderer.g, state, readyInfo(state, m));
     drawScreen(renderer.g, state, input.moved ? canvasPos(input.mouse) : null, m.me, online);
     if (toast && performance.now() < toast.until && !screenActive(state)) drawToast(renderer.g, toast.text, toast.icon, toast.tint);
     if (mapBanner && !screenActive(state) && !(online && (S.status === 'paused' || S.status === 'reconnecting'))) { const age = performance.now() - mapBanner.from; if (age < BANNER_MS) drawMapBanner(renderer.g, mapBanner.round, mapBanner.name, Math.min(1, (BANNER_MS - age) / 700, age / 150)); else mapBanner = null; }
@@ -404,7 +446,7 @@ const dumpEl = params.get('dump') === '1' ? Object.assign(document.body.appendCh
 if (dumpEl) dumpEl.style.cssText = 'position:fixed;left:0;bottom:0;margin:0;font:10px monospace;color:#9be15d;background:#000a;z-index:40;max-width:100vw;white-space:pre-wrap';
 requestAnimationFrame(frame);
 
-window.__game = { bgStatus: getBackgroundStatus, get mode() { return mode; }, get session() { return mode.session; }, fx, renderer, lobby, toLobby, startCreate, startJoin, enterPractice, get room() { return room; }, get joined() { return joined; } };   // handy in the console / for tests
+window.__game = { bgStatus: getBackgroundStatus, get loaded() { return loaded; }, rdy, sceneReady, get mode() { return mode; }, get session() { return mode.session; }, fx, renderer, lobby, toLobby, startCreate, startJoin, enterPractice, get room() { return room; }, get joined() { return joined; } };   // handy in the console / for tests
 
 // ---- ?selftest=1 : drives the quiz -> reveal -> card pick flow with synthetic mouse / key events ----------------------------------------------
 if (params.get('selftest') === '1') {

@@ -9,7 +9,7 @@ import { buildMap, slab } from './build.js';
 export default buildMap({
   id: 'organ-pipes', name: 'Organ Pipes', family: 'pillars',
   description: 'Pillars of rising height on a long floor; hop top to top or climb the faces.',
-  background: 'old-plaza', backgroundVariant: 1, hazardStyle: 'iron',
+  background: 'highway-interchange', backgroundVariant: 0, hazardStyle: 'iron',
   spawn: { x: 215, top: 600 },
   left: {
     solids: [slab(326, 530, 64, 70), slab(466, 470, 64, 130), slab(120, 330, 110)],   // pillars 70 / 130 high (tops 530 / 470), the perch

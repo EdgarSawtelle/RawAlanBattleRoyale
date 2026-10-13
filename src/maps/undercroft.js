@@ -8,7 +8,7 @@ import { buildMap, slab } from './build.js';
 export default buildMap({
   id: 'undercroft', name: 'Undercroft', family: 'low tunnels',
   description: 'Open roofs with a low tunnel beneath each; a small island in the middle and a lift at each edge.',
-  background: 'overgrown-downtown', backgroundVariant: 1, hazardStyle: 'rust',
+  background: 'highway-interchange', backgroundVariant: 1, hazardStyle: 'rust',
   spawn: { x: 220, top: 450 },
   tunnels: [{ x0: 120, x1: 520 }, { x0: 760, x1: 1160 }],
   left: {

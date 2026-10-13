@@ -6,10 +6,10 @@ import { SCENES } from './registry.js';
 import { W, H } from '../px.js';
 
 const FRAME_MS = 50, STILL_T = 4000;
-let scene = null, canvas = null, g = null, timer = null, animated = true, paused = false, t0 = 0;
+let T0 = STILL_T, scene = null, canvas = null, g = null, timer = null, animated = true, paused = false, t0 = 0;
 
 function post(still) {
-  scene.draw(g, still ? STILL_T : STILL_T + (performance.now() - t0));
+  scene.draw(g, still ? T0 : T0 + (performance.now() - t0));
   const bmp = canvas.transferToImageBitmap();
   postMessage({ type: 'frame', bmp, still: !!still }, [bmp]);
 }
@@ -24,7 +24,7 @@ self.onmessage = async (e) => {
       const tb = performance.now(); const mod = await SCENES[m.id]();
       scene = mod.create(m.seed || 1, m.variant || 0);
       canvas = new OffscreenCanvas(W, H); g = canvas.getContext('2d'); g.imageSmoothingEnabled = false;
-      animated = m.animated !== false; t0 = performance.now();
+      animated = m.animated !== false; t0 = performance.now(); if (typeof m.t0 === 'number') T0 = m.t0;
       post(true);                                  // a still first, so there is something to show immediately
       postMessage({ type: 'ready', buildMs: Math.round(performance.now() - tb) });
       if (animated) schedule();

@@ -7,6 +7,7 @@ import { W, H, use, R, P, TXT, TW } from './px.js';
 import { CARDS_BY_ID } from '../cards.js';
 import { drawIcon } from './icons.js';
 import { netQuality, QUALITY_COLOR } from '../net/quality.js';
+import { getMap } from '../maps/index.js';
 
 const COL = { ink: '#0e0d0c', edge: '#625b4b', bg: '#1b1916', hi: '#3d382e', track: '#2c2924', text: '#e6e0c8', dim: '#968f79', dmg: '#dcd2b0', amber: '#e9a93c', pale: '#f8ebb8' };
 const ACC = [{ base: '#a2552f', hi: '#c77c44' }, { base: '#4a9086', hi: '#7bbfae' }];
@@ -21,6 +22,44 @@ export function drawHud(g, state) {
   for (let i = 0; i < 2; i++) playerPanel(state, i);
   centrePanel(state);
   if (state.phase === 'roundEnd') banner(state); else if (state.suddenDeath) suddenDeath(state);
+  else if (state.phase === 'playing' && state.ready && state.ready.id > 0 && state.roundTick < 40 && !state.ready.resume) goFlash(state.roundTick);
+}
+
+// The pre-round gate (phase 'ready'): ROUND n + the map name, who is still loading, then 3-2-1 (host-timed: it comes with the state). Nothing is live under it.
+//   info = { me, mineReady (this screen has reported ready), sceneOk (the scene is built), total (countdown seconds) }
+export function drawReady(g, state, info) {
+  use(g);
+  const r = state.ready; if (!r) return;
+  let name = ''; try { name = getMap(state.mapId).name; } catch (e) { name = ''; }
+  drawMapBanner(g, state.round, name, 1);
+  const names = CONFIG.player.names, other = names[info.me === 0 ? 1 : 0].toUpperCase();
+  const bigY = 140;
+  if (r.cd >= 0) {                                              // 3 - 2 - 1
+    const step = info.total / 3, n = Math.max(1, Math.min(3, Math.ceil(r.cd / step - 1e-6))), t = String(n), s = 9, tw = TW(t, s), x = Math.round(W / 2 - tw / 2);
+    const into = 1 - (r.cd - (n - 1) * step) / step;            // 0..1 inside this number: it pops in
+    const sc = into < 0.12 ? s + 2 : s;
+    R(Math.round(W / 2 - 26), bigY - 6, 52, 7 * sc + 12, COL.ink); R(Math.round(W / 2 - 25), bigY - 5, 50, 7 * sc + 10, COL.bg);
+    TXT(t, Math.round(W / 2 - TW(t, sc) / 2), bigY, n === 1 ? '#d9622b' : COL.amber, sc);
+    if (r.resume) { const l = 'BACK IN THE GAME'; TXT(l, Math.round(W / 2 - TW(l, 1) / 2), bigY + 7 * s + 14, COL.dim, 1); }
+    return;
+  }
+  // still waiting: say honestly what for
+  let l1, l2 = '';
+  if (!info.mineReady) { l1 = 'LOADING...'; l2 = info.sceneOk ? 'GETTING READY' : 'THE SCENE FOR THIS MAP IS STILL BUILDING'; }
+  else { l1 = 'WAITING FOR ' + other + ' TO LOAD...'; l2 = r.waited >= 4 ? Math.floor(r.waited) + ' S' : ''; }
+  if (r.resume) l2 = 'THE ROUND CONTINUES WHEN BOTH ARE READY' + (l2 && info.mineReady ? ' (' + l2 + ')' : '');
+  const w = Math.max(TW(l1, 2), l2 ? TW(l2, 1) : 0) + 24, h = l2 ? 44 : 30, x = Math.round(W / 2 - w / 2), y = bigY - 4;
+  R(x, y, w, h, COL.ink); R(x + 1, y + 1, w - 2, h - 2, COL.edge); R(x + 2, y + 2, w - 4, h - 4, COL.bg);
+  TXT(l1, Math.round(W / 2 - TW(l1, 2) / 2), y + 8, COL.text, 2);
+  if (l2) TXT(l2, Math.round(W / 2 - TW(l2, 1) / 2), y + 28, COL.dim, 1);
+}
+
+// "GO!" for the first moments of a gated round (it never covers anything that matters: the players are already free to move).
+function goFlash(rt) {
+  const t = 'GO!', s = rt < 8 ? 8 : 7, a = rt < 24 ? 1 : Math.max(0, (40 - rt) / 16), y = 110;
+  if (a <= 0) return;
+  if (a < 1 && Math.floor(rt / 2) % 2) return;                // blink out
+  TXT(t, Math.round(W / 2 - TW(t, s) / 2), y, COL.pale, s, [COL.ink, 1, 1]);
 }
 
 // Small icons of the player's cards under the panel (x2 for stacks).

@@ -25,15 +25,17 @@ async function copyText(text) {
 export function createLobby(root, handlers) {
   let name = storedName();
   let view = { kind: 'menu', code: '', invite: '', error: '', status: '' };
+  let loading = false;                              // the first scene is still being built: clicks are queued by main.js, the lobby says so
 
   const row = (k, a) => `<span class="k">${pxSVG(k, 2)}</span><span class="a">${pxSVG(a, 2)}</span>`;
   const title = `<div class="ov-title">${pxSVG('RAW ALAN', 7, '#0e0d0c')}${pxSVG('BATTLE ROYALE', 4, '#0e0d0c')}</div>`;
   const controls = `<div class="lb-controls">${row('A / D', 'MOVE')}${row('W / SPACE', 'JUMP, CLIMB WALLS')}${row('MOUSE', 'AIM')}${row('LEFT CLICK', 'SHOOT')}${row('RIGHT CLICK', 'BLOCK')}${row('1-4 / CLICK', 'ANSWER THE QUIZ')}</div>`;
 
   function msg() {
+    const ld = loading && view.kind === 'menu' ? `<div class="lb-msg lb-loading">${esc('Loading the game (the first scene is being built)... you can already press a button: it starts when everything is ready.')}</div>` : '';
     const e = view.error ? `<div class="lb-msg lb-err">${esc(view.error)}</div>` : '';
     const s = view.status ? `<div class="lb-msg lb-info">${esc(view.status)}</div>` : '';
-    return e + s;
+    return ld + e + s;
   }
   const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
@@ -106,6 +108,8 @@ export function createLobby(root, handlers) {
     showCreating() { view = { kind: 'creating', error: '', status: '' }; render(); },
     showWaiting(code, invite) { view = { kind: 'waiting', code, invite, error: '', status: '' }; render(); },
     showJoining(code, status = '') { view = { kind: 'joining', code, error: '', status }; render(); },
+    setLoading(on) { if (loading === !!on) return; loading = !!on; if (view.kind === 'menu') render(); },
+    get loading() { return loading; },
     setStatus(text) { view.status = text; const el = root.querySelector('.lb-info'); if (el) el.textContent = text; else render(); },
     prefillCode(code) { const el = root.querySelector('#lb-code'); if (el) el.value = code; },
   };

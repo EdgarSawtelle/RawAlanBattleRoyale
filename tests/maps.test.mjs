@@ -20,15 +20,15 @@ function ok(cond, msg) { if (!cond) throw new Error(msg || 'assertion failed'); 
 const overlap = (a, b, m = 0) => a.x < b.x + b.w - m && a.x + a.w > b.x + m && a.y < b.y + b.h - m && a.y + a.h > b.y + m;
 const circleRect = (cx, cy, r, b) => { const dx = Math.max(b.x - cx, 0, cx - (b.x + b.w)), dy = Math.max(b.y - cy, 0, cy - (b.y + b.h)); return dx * dx + dy * dy < r * r; };
 
-test('the rotation holds the real maps: at least 29 (the 4 originals + 25 layouts), each with a name, a family, a description, a background and its own id; all 8 backdrop looks are used', () => {
+test('the rotation holds the real maps: at least 29 (the 4 originals + 25 layouts), each with a name, a family, a description, a background and its own id; all 16 backdrop looks are used', () => {
   ok(ROTATION.length >= 29, 'at least 29 maps: ' + ROTATION.length);
-  const bgs = new Set(ROTATION.map((id) => getMap(id).background)); ok(bgs.size === 4, 'all four backgrounds are used: ' + [...bgs]);
+  const bgs = new Set(ROTATION.map((id) => getMap(id).background)); ok(bgs.size === 8, 'all eight backgrounds are used: ' + [...bgs]);
   const looks = {}; for (const id of ROTATION) { const m = getMap(id); const k = m.background + ' ' + (m.backgroundVariant || 0); looks[k] = (looks[k] || 0) + 1; }
-  ok(Object.keys(looks).length === 8, 'all 8 scene / variant combinations are used: ' + JSON.stringify(looks));
-  for (const [k, n] of Object.entries(looks)) ok(n >= 3, 'every backdrop look has at least 3 maps: ' + k + ' has ' + n);
+  ok(Object.keys(looks).length === 16, 'all 16 scene / variant combinations are used: ' + JSON.stringify(looks));
+  for (const [k, n] of Object.entries(looks)) ok(n >= 1, 'every backdrop look has at least 1 map: ' + k + ' has ' + n);
   const fam = {}; for (const id of ROTATION) { const m = getMap(id); ok(m.name && m.family && m.description && m.background && m.spawns.length === 2, id + ' has a name, family, description, background and two spawns'); fam[m.family] = (fam[m.family] || 0) + 1; }
   ok(new Set(ROTATION).size === ROTATION.length && new Set(ROTATION.map((id) => getMap(id).name)).size === ROTATION.length, 'ids and names are unique');
-  console.log('        ' + ROTATION.length + ' maps, families: ' + Object.entries(fam).map(([k, n]) => k + ' ' + n).join(', ') + '; looks: ' + Object.entries(looks).map(([k, n]) => k.replace('overgrown-downtown', 'OD').replace('waterfall-forest', 'WF').replace('old-plaza', 'OP').replace('abandoned-suburb', 'AS') + ' ' + n).join(', '));
+  console.log('        ' + ROTATION.length + ' maps, families: ' + Object.entries(fam).map(([k, n]) => k + ' ' + n).join(', ') + '; looks: ' + Object.entries(looks).map(([k, n]) => k.replace('overgrown-downtown', 'OD').replace('waterfall-forest', 'WF').replace('old-plaza', 'OP').replace('abandoned-suburb', 'AS').replace('dry-harbour', 'DH').replace('highway-interchange', 'HI').replace('sunken-metro', 'SM').replace('snowbound-town', 'SB') + ' ' + n).join(', '));
 });
 
 for (const id of ROTATION) {

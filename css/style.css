@@ -72,6 +72,7 @@ html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden;
 .lb-msg { font: 14px/1.4 var(--mono); text-align: center; padding: 8px 10px; margin: 6px 0; }
 .lb-err { color: #f0b9a3; background: #3a1d15; border: 2px solid #8a3a24; }
 .lb-info { color: var(--text); background: var(--track); border: 2px solid var(--edge); }
+.lb-loading { color: #e9a93c; background: var(--track); border: 2px dashed var(--edge); }
 .lb-controls { display: grid; grid-template-columns: auto auto auto auto; column-gap: 14px; row-gap: 5px; justify-content: center; margin-top: 10px; opacity: .85; }
 .lb-controls .k { color: var(--amber); justify-self: end; } .lb-controls .a { color: var(--text); }
 #netbar { position: absolute; top: 6px; left: 50%; transform: translateX(-50%); z-index: 9; font: 12px var(--mono); color: var(--dim); background: rgba(10,9,8,.7); padding: 2px 8px; display: none; }

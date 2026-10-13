@@ -318,7 +318,7 @@ function matchEndScreen(g, v, mouse, X) {
 }
 
 // ---- entry points --------------------------------------------------------------------------------------------------------------------
-export function screenActive(state) { return state.phase !== 'playing' && state.phase !== 'roundEnd'; }
+export function screenActive(state) { return state.phase !== 'playing' && state.phase !== 'roundEnd' && state.phase !== 'ready'; }
 
 // mouse = { x, y } in canvas pixels (or null)
 // me = which player is looking at this screen (0 = host / practice, 1 = online client). Only the round loser can click.

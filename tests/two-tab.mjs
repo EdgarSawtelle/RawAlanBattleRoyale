@@ -57,7 +57,7 @@ async function openPage(cdp, url) {
   return page;
 }
 
-const Q = (LOCAL ? '&local=1' : '') + (process.env.EXTRA || '');
+const Q = (LOCAL ? '&local=1' : '') + '&gatelog=1' + (process.env.EXTRA || '');
 const ST = (p, expr) => p.eval(`(() => { const s = window.__game.session.state; return ${expr}; })()`);
 
 const pages = {};
@@ -95,6 +95,25 @@ async function main() {
     check('both sides connected', true);
     const names = await B.eval('window.__game.session.names.join(",")');
     check('names were exchanged', /HOSTY,/.test(names), names);
+
+    // ---- the ready gate: the round does not start before BOTH screens can show it; both see the countdown from its start; nothing changes before GO ----
+    await A.waitFor("window.__game.session.state.phase === 'playing'", 20000, 'the host goes live after the countdown');
+    await B.waitFor("window.__game.session.state.phase === 'playing'", 20000, 'the client goes live after the countdown');
+    {
+      const logs = await Promise.all([A.eval('JSON.stringify(window.__gateLog)'), B.eval('JSON.stringify(window.__gateLog)')]).then((r) => r.map((s) => JSON.parse(s)));
+      for (const [who, log] of [['host', logs[0]], ['client', logs[1]]]) {
+        const rd = log.filter((e) => e.ph === 'ready'), cds = rd.filter((e) => e.cd >= 0);
+        const bad = rd.findIndex((e) => !(e.b === 0 && e.rt === 0 && JSON.stringify(e.hp) === JSON.stringify(rd[rd.length - 1].hp) && JSON.stringify(e.x) === JSON.stringify(rd[rd.length - 1].x)));
+        const frozen = rd.length > 0 && bad < 0;
+        check('the ' + who + ' screen: nobody\'s HP or position changes and nothing is fired before GO (' + rd.length + ' frames in the gate)', frozen, 'frame ' + bad + ': ' + JSON.stringify(rd[bad]) + ' vs last ' + JSON.stringify(rd[rd.length - 1]));
+        const mono = cds.every((e, i) => i === 0 || e.cd <= cds[i - 1].cd + 0.001);
+        check('the ' + who + ' screen saw the 3-2-1 from its start (first frame ' + (cds[0] ? cds[0].cd : '-') + ' s of ' + 2.7 + ', ' + cds.length + ' frames), counting down', cds.length > 60 && cds[0].cd > 2.2 && mono, JSON.stringify(cds.slice(0, 2)));
+        const goIdx = log.findIndex((e) => e.ph === 'playing');
+        check('the ' + who + ' screen goes from the gate straight to live play', goIdx > 0 && log[goIdx - 1].ph === 'ready' && log[goIdx - 1].cd < 0.6, JSON.stringify(log[goIdx - 1]));
+      }
+      const goA = logs[0].find((e) => e.ph === 'playing'), goB = logs[1].find((e) => e.ph === 'playing');
+      console.log('      gate: host live at +' + (goA.t - logs[0][0].t) + ' ms, client live at +' + (goB.t - logs[1][0].t) + ' ms of their own first frame');
+    }
 
     // ---- a few seconds of duel; client input moves the client player on the host ----
     await sleep(1500);
@@ -252,6 +271,11 @@ async function main() {
     check('the match resumed with the same score, builds and round', after === before, before + ' vs ' + after);
     check('both sides agree again after the rejoin', (await ST(B, 'JSON.stringify(s.scores)')) === (await ST(A, 'JSON.stringify(s.scores)')));
     await Promise.all([A.shot('rejoined-host'), B.shot('rejoined-client')]);
+    // the rejoin went through the ready gate (a short countdown), not straight into live fire
+    await A.waitFor("window.__game.session.state.phase === 'playing'", 15000, 'the host is live again after the rejoin gate');
+    await B.waitFor("window.__game.session.state.phase === 'playing'", 15000, 'the client is live again after the rejoin gate');
+    { const lg = JSON.parse(await B.eval('JSON.stringify(window.__gateLog)')), rs = lg.filter((e) => e.ph === 'ready' && e.rs);
+      check('a rejoin in the middle of a round goes through the gate (resume countdown), the round keeps its HP and positions', rs.length > 5 && rs.every((e) => JSON.stringify(e.hp) === JSON.stringify(rs[0].hp) && JSON.stringify(e.x) === JSON.stringify(rs[0].x)), rs.length + ' frames'); }
 
     // ---- leave on purpose ----
     await B.eval('window.__game.toLobby("")');

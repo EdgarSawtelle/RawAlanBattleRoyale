@@ -11,6 +11,7 @@
 //    in       C->H unreliable{ f:[frame, frame, frame] }             newest frame first, older ones repeated for loss
 //    intent   C->H reliable  { i: { type:'answer'|'pick'|'continue'|'playAgain', ... } }
 //    mv       H->C reliable  { view }                                matchView(): what the client may see of the match
+//    ready    C->H reliable  { id }                                  "my screen can show the round": id = the gate id from the snapshot's rg (a stale one is ignored)
 //    ping/pong both reliable { ts }
 //    nack     H->C reliable  { error }                               an intent was rejected
 //    bye      both reliable  { reason }                              leaving on purpose
@@ -19,7 +20,7 @@ import { CONFIG } from '../config.js';
 
 export const T = {
   HELLO: 'hello', WELCOME: 'welcome', REJECT: 'reject', FULL: 'full', SNAP: 'snap', EV: 'ev', IN: 'in',
-  INTENT: 'intent', MV: 'mv', PING: 'ping', PONG: 'pong', NACK: 'nack', BYE: 'bye',
+  INTENT: 'intent', MV: 'mv', PING: 'ping', PONG: 'pong', NACK: 'nack', BYE: 'bye', READY: 'ready',
 };
 export const VERSION = CONFIG.net.gameVersion;
 
@@ -56,5 +57,6 @@ export function decodeFrame(f) {
 export function validInputMsg(m) {
   return m && Array.isArray(m.f) && m.f.length > 0 && m.f.length <= 8 && m.f.every((f) => Array.isArray(f) && f.length === 3 && Number.isInteger(f[0]) && Number.isInteger(f[1]) && Number.isInteger(f[2]) && f[2] >= 0 && f[2] <= 65535);
 }
+export function validReady(m) { return !!m && Number.isInteger(m.id) && m.id >= 0; }
 const INTENTS = new Set(['answer', 'pick', 'continue', 'playAgain', 'hover']);
 export function validIntent(i) { return !!i && INTENTS.has(i.type); }

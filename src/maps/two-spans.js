@@ -9,7 +9,7 @@ import { buildMap, slab, crateRow } from './build.js';
 export default buildMap({
   id: 'two-spans', name: 'Two Spans', family: 'bridge',
   description: 'A high span and a low span, tower lifts between them, crates you can shoot out of the high one.',
-  background: 'abandoned-suburb', backgroundVariant: 1, hazardStyle: 'brick',
+  background: 'highway-interchange', backgroundVariant: 0, hazardStyle: 'brick',
   spawn: { x: 150, top: 340 },
   left: {
     solids: [slab(50, 340, 200, 130), slab(340, 560, 110)],          // the tower (spawn on top); the low ledge

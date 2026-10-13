@@ -11,6 +11,7 @@
 //   host sees client shot you click -> the host has your bullet
 // Run: node tests/latency.mjs [trials=12] [--json]
 import { CONFIG } from '../src/config.js';
+CONFIG.round.gate = false;                      // these tests start rounds live (the ready gate has its own tests, see tests/gate.test.mjs)
 import { virtualClock } from '../src/net/scheduler.js';
 import { LoopbackNetwork } from '../src/net/transport.js';
 import { HostSession } from '../src/net/host-session.js';

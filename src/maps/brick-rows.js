@@ -8,7 +8,7 @@ import { buildMap, slab, crateRow } from './build.js';
 export default buildMap({
   id: 'brick-rows', name: 'Brick Rows', family: 'floating rows',
   description: 'Rows of crates float over the pit: run across them, or shoot them out from under someone.',
-  background: 'old-plaza', backgroundVariant: 0, hazardStyle: 'iron',
+  background: 'dry-harbour', backgroundVariant: 1, hazardStyle: 'iron',
   spawn: { x: 150, top: 540 },
   left: {
     solids: [slab(60, 540, 430, 26), slab(300, 470, 90, 70)],           // the floor; a step block (70 up) beside the row

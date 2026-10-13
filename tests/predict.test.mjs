@@ -5,6 +5,7 @@
 // host simulates the client's input frames one per tick in order.
 // Run:  node tests/predict.test.mjs
 import { CONFIG } from '../src/config.js';
+CONFIG.round.gate = false;                      // these tests start rounds live (the ready gate has its own tests, see tests/gate.test.mjs)
 import { virtualClock } from '../src/net/scheduler.js';
 import { LoopbackNetwork } from '../src/net/transport.js';
 import { HostSession } from '../src/net/host-session.js';
