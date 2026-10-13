@@ -1,0 +1,35 @@
+# internal: a frozen playable copy used during development, never published
+.stable/
+
+# the out-of-date HTML prototypes (mockups/) are not part of the game
+mockups/
+
+# tooling and local clutter
+node_modules/
+.claude/
+.idea/
+.vscode/
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# browser profiles / temp dirs the test tools may create next to the project
+rab-edge-*/
+rab-shots-*/
+*.crdownload
+
+# old quiz drafts
+docs/quiz/archive/
+
+# the owner's brief and working notes stay local
+instructions.txt
+PROGRESS.md
+
+# development-history screenshots (only screenshots/final/ is published)
+screenshots/phase1/
+screenshots/phase2/
+screenshots/phase3/
+screenshots/physics/
+screenshots/backgrounds/
