@@ -54,6 +54,10 @@ export const CONFIG = {
     size: 1,               // body size multiplier
     blockCooldown: 4,      // seconds from block activation until the next block can be used
     blockWindow: 0.3,      // seconds the shield stays up
+    airJumps: 0,           // extra jumps in mid air (cards: Cloudstep); refilled on the ground and on a wall
+    wallGlide: 1,          // multiplier on the wall-slide gravity while gripping (0 = you hang still: Limpet)
+    hazardTaken: 1,        // multiplier on the damage hazards (spikes, saws, grates) do to you (0 = immune: Salamander)
+    blockDamage: 1,        // multiplier on the damage your bullets do to crates, barrels and slabs (Demo Permit)
   },
   // Hard floors/caps clamped AFTER all card modifiers (CARDS.md "Global balance rules"). [min, max], absolute values.
   statLimits: {
@@ -78,6 +82,10 @@ export const CONFIG = {
     size: [0.6, 1.6],
     blockCooldown: [1.0, 10],
     blockWindow: [0.15, 0.8],
+    airJumps: [0, 3],
+    wallGlide: [0, 1],
+    hazardTaken: [0, 1],
+    blockDamage: [1, 4],
   },
   // Global caps that are not plain stat limits (CARDS.md).
   caps: {
@@ -114,6 +122,7 @@ export const CONFIG = {
     wallJumpVx: 220,       // horizontal kick away from the wall (ROUNDS ratio: 1 sideways : 2 up)
     wallJumpVyMul: 0.92,   // vertical speed of a wall jump as a fraction of jumpVelocity (607 u/s)
     wallCoyote: 0.10,      // can still wall-jump this long after touching the wall
+    airJumpMul: 0.85,      // an air jump launches at this fraction of the jump velocity
     maxSpeed: 1100,        // hard speed limit (stacked explosions on a light build gave 1700-2400 u/s: a flight across the whole map). Normal play never reaches it: terminal fall 950, hit knockback capped at 700 per impulse
     carryTime: 0.30,       // after a shove / wall kick, ground friction is weak for this long so the push glides
     carryFriction: 800,    // ground braking (no input) while carrying a shove (normal groundFriction is 3000)
@@ -130,7 +139,8 @@ export const CONFIG = {
   combat: {
     bulletSubstep: 4,          // bullet collision substep length in units
     ownerImmunity: 0.15,       // a bullet cannot hit its own shooter for this long OR until its first bounce
-    bulletKillMargin: 60,      // bullets further than this outside the 1280x720 field are removed
+    bulletKillMargin: 60,      // bullets further than this outside the 1280x720 field are removed (sides and bottom)
+    bulletKillMarginTop: 900,  // ...and above the top (lobbed shells may fly high and come back; the top of the screen is free)
     bulletBlockDamageMul: 1.0, // bullet damage multiplier against destructible blocks
     shieldPadding: 10,         // shield bubble radius = half-diagonal of the body + this
     explosionBlockMul: 2.5,    // explosion damage multiplier against destructible blocks
@@ -150,6 +160,7 @@ export const CONFIG = {
     ghostTime: 0.6,        // seconds the returning player passes through terrain (never bonks a platform from below)
     sideLaunchVx: 540,     // horizontal launch speed when coming back from a side
     sideLaunchVy: 380,     // upward launch speed when coming back from a side
+    creditTicks: 180,      // a fall within this many ticks (3 s) of a hit counts as the attacker's ring-out
     reentryInset: 8,       // players are put this far inside the field edge before launching
   },
 
@@ -157,7 +168,7 @@ export const CONFIG = {
   round: {
     endDelay: 1.6,         // seconds between the deciding death and the restart
     timeLimit: 45,         // seconds of normal play; then SUDDEN DEATH starts
-    suddenDeathDps: 2,     // HP lost per second by BOTH players during sudden death (the lower HP dies first; same tick = draw)
+    suddenDeathDps: 2,     // HP lost per second by BOTH players during sudden death at 100 max HP; scaled by max HP (2% of max HP per second). The lower HP percentage dies first; same tick = draw
     suddenDeathBanner: 2.0,// seconds the big "SUDDEN DEATH" banner is shown
   },
 
@@ -216,7 +227,7 @@ export const CONFIG = {
 
   // ---- online play (src/net) --------------------------------------------------------------------------------
   net: {
-    gameVersion: 2,            // host and client must match, otherwise "refresh the page"
+    gameVersion: 3,            // host and client must match, otherwise "refresh the page"
     roomPrefix: 'rawalan-',    // PeerJS id = prefix + room code (keeps ids unique on the shared public broker)
     codeAlphabet: 'ABCDEFGHJKMNPQRSTUVWXYZ23456789',   // no 0/O, 1/I/L: unambiguous
     codeLength: 5,

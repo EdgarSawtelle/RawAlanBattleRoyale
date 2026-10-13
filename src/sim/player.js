@@ -31,6 +31,10 @@ export function createPlayer(index, cards = []) {
     wallRegrab: 0,          // after any jump: the wall cannot be gripped / refill the jump for a moment
     carry: 0,               // after a shove or wall kick: weak ground friction so the push glides
     jumpCharge: 0,          // the one stored jump (1 while on the ground, kept when walking off a ledge)
+    airLeft: 0,             // air jumps left (stats.airJumps, refilled on the ground and on a wall)
+    blockSeq: 0,            // counts blocks activated (a card reacts once per block)
+    dyn: {},                // current key of every dynamic card { cardId: key } (see cardfx.js)
+    lastHit: null,          // { by, tick } the last player who hurt us (credit for a ring-out)
     jumping: false,         // rising from a jump (for the variable-height cut)
     oobInv: 0,              // out-of-bounds invulnerability after being thrown back
     hazardCd: 0,            // re-hit cooldown after a hazard hit
@@ -47,13 +51,14 @@ export function createPlayer(index, cards = []) {
 
 // Put a player back at a spawn with full HP/ammo (round start).
 export function resetPlayerForRound(p, spawn) {
-  p.stats = computeStats(p.cards);
+  p.dyn = {}; p.stats = computeStats(p.cards, [], p.dyn);
   p.w = CONFIG.player.width * p.stats.size; p.h = CONFIG.player.height * p.stats.size;
   p.x = spawn.x; p.y = spawn.y - (p.h - CONFIG.player.height) / 2; p.vx = 0; p.vy = 0;
   p.alive = true; p.hp = p.stats.maxHp; p.ammo = p.stats.magazine;
   p.reloadLeft = 0; p.fireCd = 0; p.blockLeft = 0; p.blockCd = 0; p.blockPrev = false;
   p.grounded = false; p.groundId = null; p.wallDir = 0; p.wallSide = 0;
-  p.coyote = 0; p.jumpBuf = 0; p.wallCoyote = 0; p.wallRegrab = 0; p.carry = 0; p.jumpCharge = 0; p.jumping = false;
+  p.coyote = 0; p.jumpBuf = 0; p.wallCoyote = 0; p.wallRegrab = 0; p.carry = 0; p.jumpCharge = 0; p.jumping = false; p.airLeft = 0;
+  p.dyn = {}; p.lastHit = null; p.stats = computeStats(p.cards, [], p.dyn);
   p.oobInv = 0; p.hazardCd = 0; p.ghost = 0; p.cardState = {};
   p.timed = []; p.shotTaken = {}; p.healed = 0; p.reflectCount = 0;
 }
@@ -62,7 +67,7 @@ export function resetPlayerForRound(p, spawn) {
 export function setPlayerCards(p, cardIds) {
   const oldMaxHp = p.stats.maxHp, oldH = p.h;
   p.cards = [...cardIds];
-  p.stats = computeStats(p.cards, p.timed);
+  p.stats = computeStats(p.cards, p.timed, p.dyn);
   p.w = CONFIG.player.width * p.stats.size; p.h = CONFIG.player.height * p.stats.size;
   p.y -= (p.h - oldH) / 2;                                    // grow/shrink around the feet
   if (p.alive) p.hp = Math.min(p.stats.maxHp, Math.max(1, p.hp + (p.stats.maxHp - oldMaxHp)));
@@ -104,7 +109,7 @@ export function stepPlayer(state, p, input, colliders, dt) {
   if (blockPressed && p.blockCd <= 0 && p.blockLeft <= 0) {
     p.blockLeft = st.blockWindow;
     p.blockCd = st.blockCooldown;
-    p.reflectCount = 0;
+    p.reflectCount = 0; p.blockSeq += 1;
     emit(state, 'blockStart', { player: p.index, x: p.x, y: p.y });
   }
 
@@ -168,7 +173,7 @@ export function stepMovement(p, inp, colliders, dt, emitFn) {
   if (!p.grounded && Math.abs(p.vy) < M.apexSpeed && inp.jump) g *= M.apexGravityMul;
   if (gripping && p.vy >= 0) {                                   // gliding down the wall: weak gravity + wall friction
     p.vy -= p.vy * Math.min(1, M.wallScrub * dt);
-    p.vy += M.wallSlideAccel * dt;
+    p.vy += M.wallSlideAccel * (st.wallGlide ?? 1) * dt;           // wallGlide 0 (Limpet): you hang on the wall
     p.vy = Math.min(p.vy, M.wallSlideMax);
   } else {
     if (gripping) g *= M.wallRiseGravityMul;                     // rising along the wall: lighter
@@ -184,6 +189,9 @@ export function stepMovement(p, inp, colliders, dt, emitFn) {
       p.vy = -st.jumpVelocity; p.jumping = true; p.jumpBuf = 0; p.coyote = 0; p.grounded = false; p.jumpCharge = 0;
       p.wallRegrab = M.wallRegrab;
       if (emitFn) emitFn('jump', { player: p.index, x: p.x, y: p.y + p.h / 2, wall: 0 });
+    } else if (p.wallCoyote <= 0 && p.airLeft > 0) {                                  // an air jump (Cloudstep)
+      p.airLeft -= 1; p.vy = -st.jumpVelocity * M.airJumpMul; p.jumping = true; p.jumpBuf = 0; p.wallRegrab = M.wallRegrab;
+      if (emitFn) emitFn('jump', { player: p.index, x: p.x, y: p.y + p.h / 2, wall: 0, air: 1 });
     } else if (p.wallCoyote > 0) {
       const away = -p.wallSide;
       p.vx = away * M.wallJumpVx; p.vy = -st.jumpVelocity * M.wallJumpVyMul;
@@ -212,12 +220,12 @@ export function stepMovement(p, inp, colliders, dt, emitFn) {
   const below = p.vy >= 0 ? firstOverlap(p, colliders, 0, 1) : null;
   p.grounded = !!below;
   p.groundId = below && below.kind === 'platform' ? below.id : null;
-  if (p.grounded) { p.coyote = M.coyoteTime; p.jumpCharge = 1; }
+  if (p.grounded) { p.coyote = M.coyoteTime; p.jumpCharge = 1; p.airLeft = st.airJumps; }
   p.wallDir = 0;
   if (!p.grounded) {
     const l = firstOverlap(p, colliders, -1, 0), r = firstOverlap(p, colliders, 1, 0);
     if (l && !r) p.wallDir = -1; else if (r && !l) p.wallDir = 1; else if (l && r) p.wallDir = dir || 1;
-    if (p.wallDir !== 0 && p.wallRegrab <= 0) { p.wallSide = p.wallDir; p.wallCoyote = M.wallCoyote; p.jumpCharge = 1; }   // wall contact refills the jump
+    if (p.wallDir !== 0 && p.wallRegrab <= 0) { p.wallSide = p.wallDir; p.wallCoyote = M.wallCoyote; p.jumpCharge = 1; p.airLeft = st.airJumps; }   // wall contact refills the jump (and the air jumps)
   }
 }
 
@@ -246,7 +254,7 @@ function fire(state, p) {
     const b = spawnBullet(state, p.index, { x: p.x + Math.cos(angle) * dist, y: p.y + Math.sin(angle) * dist, angle, shotId });
     if (b) bullets.push(b);
   }
-  p.vx -= Math.cos(p.aim) * st.recoil; p.vy -= Math.sin(p.aim) * st.recoil * 0.5;
+  p.vx -= Math.cos(p.aim) * st.recoil; p.vy -= Math.sin(p.aim) * st.recoil * 0.8;
   emit(state, 'shot', { player: p.index, x: p.x + Math.cos(p.aim) * (dist + 4), y: p.y + Math.sin(p.aim) * (dist + 4), angle: p.aim, pellets: n });
   fireHook(state, 'onShoot', p.index, { bullets });
 }
@@ -280,6 +288,8 @@ export function checkOutOfBounds(state, p, colliders) {
   }
   p.grounded = false; p.groundId = null; p.wallDir = 0;
   emit(state, 'oob', { player: p.index, fromX: px, fromY: py, x: p.x, y: p.y, side: bottom ? 'bottom' : (left ? 'left' : 'right') });
+  const lh = p.lastHit;                                                        // thrown out soon after being hit: the attacker gets the credit (Gravedigger)
+  if (lh && lh.by !== p.index && state.tick - lh.tick <= CONFIG.oob.creditTicks) fireHook(state, 'onRingOut', lh.by, { target: p, targetIndex: p.index });
 }
 
 export { bodyOverlaps };

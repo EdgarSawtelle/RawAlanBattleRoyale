@@ -10,6 +10,7 @@
 //    ?autostart=1        practice, no lobby                ?demo=1         a bot also drives YOUR player (implies autostart)
 //    ?screen=quiz|quizreveal|cardpick|dummy|matchend  (&answer=right|wrong &quiz=right|wrong &qid= &offer=a,b,c,d,e &score=3-1 &round=N &step=0|1|2 &winner=1)
 //    ?scenario=explosion|hazard   scripted test situations
+//    ?scenario=cfx-slab|cfx-fuse|cfx-ring|cfx-trebuchet|cfx-permit|cfx-cloud|cfx-tithe|cfx-limpet   card effects, frozen at the interesting moment (&stopAfter=N)
 //    ?scenario=glide|climb|arc    physics pictures: wall glide, one-wall climb (&stopAfter=N), a stream of bullets along one arc
 //    ?menu=1             open the Esc menu (help) right away      ?rotate=1   keep the map rotation on in the test URLs   ?prebuild=0   do not pre-build the other maps' backdrops
 //    ?debug=1            open the debug panel              ?hitboxes=1     show hitboxes
@@ -27,6 +28,7 @@ import { CONFIG } from './config.js';
 import { MAPS, registerMap, getMap } from './maps/index.js';
 import { solveAimFromBody } from './sim/aim.js';
 import { STEP, setCards, intent } from './sim/world.js';
+import { spawnBullet } from './sim/combat.js';
 import { debugQuiz, debugCardPick, debugMatchEnd, debugSetScore, answerQuiz } from './sim/match.js';
 import { CARDS_BY_ID } from './cards.js';
 import { drawScreen, screenActive, hitIntent, keyIntent, getHover, nextDummyStep, setDummyStep } from './client/screens.js';
@@ -98,7 +100,7 @@ function applyNames(names) { CONFIG.player.names[0] = names[0] || DEFAULT_NAMES[
 // ---- practice session (also the frozen backdrop of the lobby) -------------------------------------------------------------
 // The map rule (practice and online alike, the host decides): a new map every round, shuffled so all of them appear before any repeats
 // (sim/world.js drawMap). ?map=id pins one map; the test URLs (autostart, scenario, screen...) pin the first map so pictures stay the same.
-const pinnedMap = () => params.get('map') || (SCEN === 'glide' || SCEN === 'climb' ? 'phys-yard' : SCEN === 'arc' ? 'phys-arc' : urlStart && params.get('rotate') !== '1' ? MAPS[0].id : null);
+const pinnedMap = () => params.get('map') || (SCEN === 'glide' || SCEN === 'climb' || SCEN === 'cfx-limpet' ? 'phys-yard' : SCEN === 'arc' ? 'phys-arc' : urlStart && params.get('rotate') !== '1' ? MAPS[0].id : null);
 function makePractice(forLobby) {
   const pin = forLobby ? MAPS[0].id : pinnedMap();
   const s = createPracticeSession({
@@ -116,7 +118,7 @@ function makePractice(forLobby) {
 
 // ---- physics picture scenarios: small variations of the real map (registered only when asked for) -----------------------------
 const SCEN = params.get('scenario');
-if (SCEN === 'glide' || SCEN === 'climb') {            // the left pillar becomes a tall wall
+if (SCEN === 'glide' || SCEN === 'climb' || SCEN === 'cfx-limpet') {            // the left pillar becomes a tall wall
   const base = MAPS[0];
   registerMap({ ...base, id: 'phys-yard', name: 'Physics yard', solids: base.solids.filter((s) => !(s.x === 250 && s.y === 330) && !(s.x === 210 && s.y === 190)).map((s) => (s.x === 330 && s.y === 416 ? { ...s, y: 80, h: 400 } : s)) });   // (the overhanging step and perch beside the wall are removed so nothing bonks the climber)
 }
@@ -154,6 +156,24 @@ function applyTestParams(session) {
       const f = { ...NONE, right: true, jump: true, jumpPressed: want && !prev }; prev = want; return f;
     };
     if (!params.get('stopAfter')) session.stopAfterTicks = SCEN === 'glide' ? 40 : 100;
+  }
+  if (SCEN && SCEN.startsWith('cfx-')) {                       // card effect pictures: a scripted moment on the first map, frozen shortly after
+    const p0 = st.players[0], p1 = st.players[1], kind = SCEN.slice(4), at = (S, n) => S.ticks === n;
+    session.bot.mode = 'off'; st.cheats.invulnerable = [false, false];
+    const bolt = (owner, x, y, angle, damage = 20) => spawnBullet(st, owner, { x, y, angle, speed: 1500, damage, gravity: 0 });   // (events from a hook before the step are lost: everything happens through real bullets)
+    const put = (p, x, y) => { p.x = x; p.y = y; p.vx = 0; p.vy = 0; };
+    let stop = 14, script = () => NONE;
+    if (kind === 'slab') { setCards(st, 0, ['bricklayer']); put(p0, 200, 300); put(p1, 1000, 465); stop = 18;
+      script = (S) => ({ ...NONE, block: S.ticks >= 4 }); session.beforeTick = (S) => { if (at(S, 4)) spawnBullet(st, 1, { x: p0.x + 60, y: p0.y, angle: Math.PI, speed: 500, damage: 5, gravity: 0 }); }; }
+    if (kind === 'fuse') { setCards(st, 0, ['partinggift']); put(p0, 190, 465); put(p1, 310, 465); p0.hp = 5; stop = 14; session.beforeTick = (S) => { if (at(S, 3)) bolt(1, p0.x + 50, p0.y, Math.PI); }; }
+    if (kind === 'ring') { setCards(st, 0, ['porcupine']); put(p0, 190, 465); put(p1, 520, 465); stop = 8; session.beforeTick = (S) => { if (at(S, 3)) bolt(1, p0.x + 50, p0.y, Math.PI, 10); }; }
+    if (kind === 'trebuchet') { setCards(st, 0, ['trebuchet']); put(p0, 150, 465); put(p1, 1100, 465); stop = 26; script = (S) => ({ ...NONE, aim: -0.62, shoot: S.ticks === 4 }); }
+    if (kind === 'permit') { setCards(st, 0, ['demopermit']); put(p0, 150, 377); put(p1, 1100, 465); stop = 10; session.beforeTick = (S) => { if (at(S, 3)) bolt(0, 128, 377, Math.PI); }; }
+    if (kind === 'cloud') { setCards(st, 0, ['cloudstep']); put(p0, 250, 465); put(p1, 1100, 465); stop = 28; script = (S) => ({ ...NONE, jump: true, jumpPressed: S.ticks === 3 || S.ticks === 24 }); }
+    if (kind === 'tithe') { setCards(st, 0, ['tithe']); put(p0, 190, 465); put(p1, 520, 465); p0.hp = 40; stop = 14; session.beforeTick = (S) => { if (at(S, 3)) bolt(0, p0.x + 30, p0.y, 0); }; }
+    if (kind === 'limpet') { setCards(st, 0, ['limpet']); put(p0, 315, 300); put(p1, 1100, 465); stop = 20; script = () => ({ ...NONE, right: true }); }
+    session.scripted = script;
+    if (!params.get('stopAfter')) session.stopAfterTicks = stop;
   }
   if (SCEN === 'arc') {
     session.bot.mode = 'off'; st.cheats.invulnerable = [true, true];
@@ -354,6 +374,7 @@ function frame(now) {
   } else input.enabled = false;
 
   const online = m.kind === 'host' || m.kind === 'guest';
+  renderer.me = m.kind === 'lobby' ? -1 : m.me;
   renderer.draw(state, prev, alpha, fx);
   if (m.kind !== 'lobby') {
     if (!screenActive(state)) { drawHud(renderer.g, state); drawHint(renderer.g); }

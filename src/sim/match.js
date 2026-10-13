@@ -23,7 +23,7 @@ import { QUESTIONS } from '../questions.js';
 import { rand } from './rng.js';
 import { emit } from './combat.js';
 import { setPlayerCards } from './player.js';
-import { countCards } from './cardfx.js';
+import { countCards, computeStats } from './cardfx.js';
 
 // ---- question pool -----------------------------------------------------------------------------------
 let pool = null;      // validated questions (cached)
@@ -85,11 +85,21 @@ export function matchView(state) {
 }
 
 // ---- offer ------------------------------------------------------------------------------------------------
+// Is this card worth offering to a player who owns `owned`? Not when it is maxed out, and not when taking it would change nothing
+// (every stat it edits is already at its floor / cap and it has no hook): the picker is never offered a dead card.
+export function cardUseful(owned, card) {
+  const counts = countCards(owned);
+  if ((counts[card.id] || 0) >= (card.maxStacks || 1)) return false;
+  if (card.hooks || card.dynamic) return true;
+  const a = computeStats(owned), b = computeStats([...owned, card.id]);
+  return Object.keys(a).some((k) => a[k] !== b[k]);
+}
+
 // 5 distinct cards drawn slot by slot with the rarity weights (catch-up weights when the picker is
-// 2+ rounds behind). Cards the picker already owns up to their maxStacks are not offered.
+// 2+ rounds behind). Cards the picker already owns up to their maxStacks, or that would change nothing, are not offered.
 export function makeOffer(state, picker) {
-  const M = CONFIG.match, p = state.players[picker], counts = countCards(p.cards);
-  const left = CARDS.filter((c) => (counts[c.id] || 0) < (c.maxStacks || 1));
+  const M = CONFIG.match, p = state.players[picker];
+  const left = CARDS.filter((c) => cardUseful(p.cards, c));
   const behind = state.scores[1 - picker] - state.scores[picker];
   const w = behind >= M.catchUpRounds ? M.catchUpWeights : M.rarityWeights;
   const offer = [];

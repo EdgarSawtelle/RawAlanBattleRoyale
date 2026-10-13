@@ -280,7 +280,7 @@ test('questions.js: every entry is valid, ids are unique, text fits the layout l
   }
   ok(idset.size === QUESTIONS.length, 'unique ids');
 });
-test('offer: 5 distinct cards, never cards at their max stacks; only Hair Trigger, Pinball, Thick Skin may be taken twice', () => {
+test('offer: 5 distinct cards, never cards at their max stacks; only five cards may be taken twice', () => {
   const s = setup([false, false], [['tightguard', 'hairtrigger', 'hairtrigger', 'pinball'], []]);
   for (let i = 0; i < 300; i++) {
     const o = makeOffer(s, 0);
@@ -289,7 +289,7 @@ test('offer: 5 distinct cards, never cards at their max stacks; only Hair Trigge
   }
   let pin = 0; for (let i = 0; i < 300; i++) if (makeOffer(s, 0).includes('pinball')) pin++;
   ok(pin > 100, 'a card with a second copy allowed can be offered again: ' + pin);
-  ok(CARDS.filter((c) => (c.maxStacks || 1) > 1).map((c) => c.id).sort().join() === 'hairtrigger,pinball,thickskin', 'only three may stack twice');
+  ok(CARDS.filter((c) => (c.maxStacks || 1) > 1).map((c) => c.id).sort().join() === 'demopermit,hairtrigger,latebloomer,pinball,thickskin', 'only five may stack twice (Hair Trigger, Pinball, Thick Skin, Demo Permit, Late Bloomer)');
   for (const c of CARDS) ok(['common', 'uncommon', 'rare'].includes(c.rarity), 'rarity of ' + c.id);
 });
 test('offer: rarity weights 55/35/10, and 45/35/20 when the picker is 2+ rounds behind (more rares)', () => {

@@ -75,13 +75,15 @@ npm test                  # or run the files one by one:
 node tests/sim.test.mjs   # movement, shooting, blocking, hazards, sudden death, out of bounds, maps (38 tests)
 node tests/physics.test.mjs # the physics pass (preset R): wall grip needs input, glide speed, regrab lockout, one-wall climb, stored jump charge,
                           # ledge pop / head-bump nudge, momentum carry, bullet drop at 300 / 600 / 900, the aim solver, bot arc aim (18 tests)
-node tests/match.test.mjs # the 10 cards, the caps, the quiz / card pick / match state machine (28 tests)
+node tests/match.test.mjs # the first 10 cards, the caps, the quiz / card pick / match state machine (28 tests)
+node tests/cards.test.mjs # the 20 later cards and the machinery under them: one test per card, dynamic modifiers, removeCard, fuses / timers, slabs, air jumps, hooks, offers with 30 cards, the nastiest stacks (35 tests)
 node tests/net.test.mjs   # the online layer over a loopback network with a virtual clock and simulated latency / jitter / loss (19 tests)
 node tests/predict.test.mjs # own-movement prediction (10 tests): press-to-movement at 60 / 100 / 150 ms RTT, convergence with no drift over long
                           # runs (wall jumps, platform rides, knockback, out of bounds, round restarts, bad links), correction size, the host's input queue
 node tests/maps.test.mjs   # every map of the rotation (30 tests): spawns safe, ids, overlaps, moving things never pass through solids, mirror image, hazard size, reachability from both spawns (prints what needs wall climbing), the rotation rule, a 60 s bot game on each map
 node tests/reach.mjs      # map reachability by single jumps / lifts / wall climbing (prints anything unreachable)
 node tests/jumpreach.mjs  # measures the real jump reach (max gap, step-up table) from the sim
+node tests/cardstats.mjs 120 # card balance probe (not a test): bots play rounds with one card against a bare opponent, prints win rate, round length, draws and effect events per card
 node tests/stuck.mjs      # the dummy bot: counts the times it stands still for too long (every map, or: node tests/stuck.mjs 120 4 old-plaza)
 node tests/shots-physics.mjs # headless Edge: the pictures in screenshots/physics/ (needs the server; waits for the animated backdrop)
 node tests/shots-final.mjs   # the final screenshot set in screenshots/final/ (--only=name, --shot="name|query|ticks|width|height" for extra pictures at another window size)

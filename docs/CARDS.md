@@ -1,438 +1,215 @@
-# CARDS: card design research and the 25-card set (RawAlanBattleRoyale)
-
-Status: proposal, revision 2 (owner feedback applied: "proper power-ups, more extreme and fun"; new baseline; self-damage; open arena). All numbers are starting values for playtesting, not final.
-
-## Conventions used in this document
-
-- Baseline: HP 100, bullet damage 20 (5 hits to kill), fire rate 3 shots/s, magazine 5, reload 2.0 s, block cooldown 4 s, block window 0.3 s, bullet speed 900 u/s, bullet radius 5, bullet lifetime 3 s, bullet gravity 80 u/s^2, zero bounces, no lifesteal, no air jumps.
-- `1u` = width of a player at size 1.0 = 32 logical units (the field is 1280x720 logical = 40u x 22.5u). Explosion radii and slab sizes are given in u. Speeds and impulses are in logical units per second, written "/s" (DESIGN.md writes the same unit "u/s"; there "u" means logical unit, here "u" alone means a body width).
-- Percentages on a stat are **additive with each other** (see "Global balance rules"). `-40%` means "factor 0.6 before other cards are added in".
-- Stat names follow `docs/DESIGN.md` section 6: `damage, fireRate, magazine, reloadTime, bulletSpeed, bulletRadius, bulletGravity, bulletsPerShot, spread, bounces, knockback, maxHp, moveSpeed, jumpVelocity, size, blockCooldown, blockWindow`. Extra stats this set needs (DESIGN.md lists them too): `airJumps` (base 0), `knockbackTaken` (base 1.0), `recoil` (base 40 logical u/s), `bulletLifetime` (base 3 s).
-- "Stat" means a number the card edits. "Hook" means code the card registers. Hooks: `onShoot`, `onBulletHit`, `onBounce`, `onBlock`, `onDamaged`, `onKill`. `onBlock` fires once per bullet the owner's shield destroys; `onKill` fires when the owner's attack kills the opponent (in a 1v1 that is the moment the round is won).
-- Infrastructure every card set needs (cheap, build once): (1) a per-player list of **timed stat modifiers** (source id, stat, amount, expires at, refresh policy); (2) **conditional modifiers** (a stat modifier plus a predicate on player state, e.g. "HP <= 40%", re-evaluated whenever HP changes); (3) a per-bullet bag of **flags and fields** the bullet step reads (`explosive`, `generation`, `shotId`, `launchDamage`, `bouncesDone`, `reflected`, `life`); (4) `ctx.removeCard()` (only Vendetta uses it); (5) a delayed-event queue (only Parting Gift); (6) a world-object spawner for slabs (only Bricklayer, "NET: medium"). Everything else is plain stats plus hooks.
-- Netcode: the host runs all card logic. Snapshots carry per-bullet render fields (position, radius, owner, flags such as explosive/reflected) and one-shot events for feedback (explosion at x,y; block reflect; fuse ring). Clients never need card logic, only card ids for the UI.
-
-### Rules every card inherits (from decisions in PROGRESS.md)
-
-- **Self-damage is on.** A bullet cannot hurt its owner for its first 0.15 s of life or until its first bounce, whichever comes first. After that it hurts anyone it touches, owner included. Explosions always hurt everyone in the radius, owner included (no immunity). Reflected bullets (Return Policy) get a fresh 0.15 s of immunity for their new owner.
-- **Open arena.** There are no walls, floor or ceiling around the screen; platforms float. Bullets that leave the screen are removed (64 logical units past the left/right/bottom edges, 600 above the top so lobs and shots at a player above the screen still work). A bounce therefore needs a platform, a destructible block or a Bricklayer slab: a bullet fired into the void never comes back.
-- **Out of bounds.** A player whose centre crosses the left, right or bottom edge takes 30% of their max HP and is thrown back in (2 s immunity to further out-of-bounds damage). Up is free. This damage ignores damage-reduction effects, cannot be blocked, and counts as a hit by the last attacker within 3 s. It is why knockback, recoil, size and max HP matter: a Thick Skin player pays 60 HP for a fall, a Featherweight pays 18.
-- **Knockback.** Hit impulse = `260 logical u/s * (hit damage / 20) * attacker.knockback * victim.knockbackTaken`, along the bullet direction, final value capped at 700 logical u/s. Explosion impulse = `400 * (explosion damage / 20) * falloff`, radial, away from the centre. Total speed gained from impulses in one frame is capped at 1000 logical u/s.
-- **Explosion damage** at distance d from the centre: 100% for d <= 1u, falling linearly to 40% at the radius, 0 outside. One explosion damages each player at most once. A bullet destroyed by a block does not detonate; an explosion that goes off while you block still hurts you.
-- **Draws.** If both players are dead when a round resolves the round restarts: no point, no quiz, no cards.
-
-### Baseline math that drives the numbers
-
-Burst dps (while firing) = `fireRate * damage * bulletsPerShot`. Sustained dps = `magazine * damage / (magazine / fireRate + reload)`.
-
-- Baseline: burst 3 * 20 = **60/s**. A magazine is 100 damage, exactly one bar of HP, so a kill needs all 5 shots to land (1.33 s of perfect hits) or two magazines. Cycle = 5/3 + 2.0 = 3.67 s, so sustained = 100 / 3.67 = **27.3 dps**.
-- **Fire rate now matters.** Reload is 54% of the cycle (was 60%), so doubling fire rate shortens the cycle to 2.83 s (+29% sustained). Hair Trigger no longer needs a patch. Reload time and magazine size are still the strongest levers, so reload cards stay rare (this set has none that only shortens reload).
-- Out-of-bounds is 30 damage, worth 1.5 baseline hits. Pushing an enemy off a platform edge or off screen is a real damage source, which is what the knockback cards price in.
-
----
-
-## Design principles (what the research says)
-
-1. **Loser-picks is the catch-up engine; it must not be the only one (ROUNDS).** The loser of each round gets a card, so losing "isn't a punishment" and the trailing player keeps a real chance. Because a match is first to 5, a player makes at most 4 picks, so each card has to be noticeable, and rarity weights can double as a second catch-up dial.
-2. **Unbounded stacking decides matches (ROUNDS).** Reviews describe the winner as whoever assembles the most "unhinged" stack, and note that some combinations become "devastatingly overpowered". That is fine for a party game but turns a skill duel into a drafting contest, so extreme cards are paired with hard caps and bounded combo chains. Fun first, but the caps decide how far "unhinged" is allowed to go.
-3. **Almost every ROUNDS upside has a paired downside, usually longer reload (ROUNDS).** In the 64-card list the same penalty (slower reload, longer block cooldown) is reused over and over. It works but makes cards samey and makes reload the universal currency. We spread the cost across different axes (HP, move speed, hitbox size, magazine size, self-damage, knockback).
-4. **A downside is required only when the upside is broadly useful (Brotato).** The Brotato community balance guide says broad-benefit items need a real downside, while niche items can skip one because needing a particular build is already the cost. Use this to decide which cards get a penalty (Cornered and Anchor are situational and get a light one).
-5. **Commons set the direction of the whole stat economy (Brotato).** The same guide calls commons the hardest to balance because they appear most often. Our commons are the simple stat swaps and must not funnel everyone toward one stat.
-6. **Additive first, diminishing curve, then multipliers (Binding of Isaac).** The wiki shows damage-ups summed then passed through a diminishing curve, flat bonuses added after, and multipliers multiplied at the end. The run-away cases (Tear Detonator, Pop!) come from items that both multiply projectile count and inherit the parent's damage. Our rule: percent mods add within a stat, and projectiles spawned by a card cannot spawn more projectiles.
-7. **Items that bypass the scaling assumption are the main bounded-chain tool (Binding of Isaac).** Akeldama's tears ignore damage scaling and Trisagion trades per-hit damage for hit frequency. We copy the idea: child bullets deal a fixed fraction of damage and cannot split again.
-8. **Cards that hook the core verbs are more interesting than stat bumps (Enter the Gungeon).** Gungeon items attach to reload, dodge roll and table flipping. Our block, bounce, reload and knockback interactions play the same role, and opt-in complexity lives on cards, not in the base game. Three cards here (Return Policy, Sleight of Hand, Bricklayer) turn a successful block into a reward.
-9. **Authored, named pairings read better than hidden math (Vampire Survivors).** Weapon plus a matching passive gives an evolution, a visible payoff for assembling two specific pieces. In a 4-pick build, 2-card combos must be explicit and quickly discoverable, so each card below lists the cards it pairs with and the offer should show owned-card icons.
-10. **Catch-up should be a small, bounded buff, and info should be readable at a glance (TowerFall, Duck Game).** TowerFall's autobalance gives trailing players a shield and leaders fewer arrows, a modest one-off buff rather than a stat snowball. Duck Game sells fast fights where weapons must be readable immediately (weak source, see Sources). Our cards need an obvious visual signature (bullet colour/size, particle) because rounds last seconds.
-11. **Lifesteal and similar scaling effects behave very differently depending on fire rate and projectile count (Brotato community discussion).** Healing must be tuned against Hair Trigger and Pepperpot specifically, hence the per-round heal cap.
-12. **Things that make 1v1 unfun (design judgement; ROUNDS and others only partly support it).** Stun locks and silences (ROUNDS has Dazzle and Silence), invisibility, one-shot builds, unavoidable damage and effects the victim cannot read. Hard rules for this set: no stun, no blind, no invisibility, no silence, no slows, no damage the victim cannot see coming, no single hit or single trigger pull able to kill from full HP. Knockback is allowed (the open arena turns it into the main way to push someone off), but it is bounded by caps and by the 2 s out-of-bounds immunity.
-13. **Make the owner's own risk part of the card (owner decision: self-damage on).** Bounce and explosion cards hurt their owner by design; the card text says so. Extreme upsides are paid for in HP, hitbox size, magazine size or self-damage rather than only in reload time.
-
-## Sources
-
-Used directly (fetched or read from search results):
-
-- ROUNDS card list, 64 cards: https://www.magicgameworld.com/?p=126089 (re-fetched for this revision)
-- ROUNDS fan guide (low reliability, used only for the comeback and stacking remarks and extra names): https://www.shapes.inc/fandom/rounds/cards
-- ROUNDS review (loser-picks, comeback, chaotic stacking): https://www.gfinityesports.com/article/i-hate-1v1-competitive-games-but-rounds-is-the-unhinged-exception
-- ROUNDS loser pick of 3 cards (search snippet only): https://thunderstore.io/c/rounds/p/Six_Mods/PickMore/
-- Brotato balance guide (community): https://brotato.wiki.spellsandguns.com/Modding/Balance_Guide
-- Brotato balance mod notes (search snippet): https://github.com/DarkTwinge/Brotato-BalanceMod
-- Isaac damage stacking: https://bindingofisaacrebirth.wiki.gg/wiki/Damage
-- Isaac item pages (search snippets): https://bindingofisaacrebirth.wiki.gg/wiki/Tear_Detonator , https://bindingofisaacrebirth.wiki.gg/wiki/Trisagion , https://bindingofisaacrebirth.wiki.gg/wiki/Akeldama , https://bindingofisaacrebirth.wiki.gg/wiki/Pop%21
-- Enter the Gungeon developer Q&A: https://www.gamedeveloper.com/design/q-a-the-guns-and-dungeons-of-i-enter-the-gungeon-i-
-- Vampire Survivors evolutions: https://en.wikipedia.org/wiki/Vampire_Survivors
-- TowerFall arrows, autobalance (search snippets): https://towerfall.wiki.gg/wiki/Variants , https://en.wikipedia.org/wiki/TowerFall
-- Duck Game (weak, TV Tropes summary only): https://tvtropes.org/pmwiki/pmwiki.php/VideoGame/DuckGame
-
-Research limits, stated plainly: little first-party design writing exists for ROUNDS, Brotato, Vampire Survivors and Duck Game. Several points rest on community guides or on my own judgement (marked). The Gungeon and Isaac material is the most solid. The revision itself (extreme numbers, caps) is design judgement, not sourced.
-
-### Name check
-
-All 25 names were compared against the 64-name ROUNDS list fetched above (Abyssal Countdown ... Wind Up) plus the extra names from the fan guide (Bouncy, Homing, Leap, Dash, Triple Jump, Speed, Sprinter, Health, Damage, Fast Firing, Life Steal, Multiple Projectiles, Drill, Remote Detonation), and against well-known Isaac, Gungeon, Brotato and Vampire Survivors item names that I know of. No exact matches. Closest neighbours, kept deliberately different: "Hair Trigger" vs ROUNDS "Quick Shot", "Pepperpot" vs ROUNDS "Buckshot" / "Spray", "Wrecking Ball" vs nothing, "Return Policy" vs ROUNDS "Echo", "Last Call" vs nothing, "Anchor" vs nothing. Mechanics inspired by ROUNDS: bounces (Pinball), explosions (Powder Keg), lifesteal (Tithe), multiple bullets (Pepperpot), block upgrades (Tight Guard). Names and flavour are ours. Do one last pass against the in-game list before art is made.
-
----
-
-## Summary table
-
-| # | Name | Rarity | One-line effect (headline numbers) | v1 |
-|---|------|--------|------------------------------------|----|
-| 1 | Hair Trigger | Common | Fire rate +100% (6/s), magazine +100% (10), damage -40% (12), +-4 deg spread | yes |
-| 2 | Pinball | Common | Bounces +4, damage -25%; every bounce adds +30% damage (also on you) | yes |
-| 3 | Thick Skin | Common | Max HP +100% (200), size +30%, move speed -25%; falls cost 60 HP | yes |
-| 4 | Needle Rounds | Common | Bullet speed +120%, no drop, damage +60% (32), magazine -3 (2) | no |
-| 5 | Tight Guard | Common | Block cooldown -75% (1.0 s), window -50% (0.15 s) | yes |
-| 6 | Scramble | Common | Max HP -20%; after any hit: +100% move speed and +50% fire rate for 2.5 s | yes |
-| 7 | Cloudstep | Common | +2 air jumps (3 jumps total), move speed -25%, max HP -20% | no |
-| 8 | Paper Dragon | Common | Damage +100% (40), max HP -40% (60), magazine -2 (3) | no |
-| 9 | Anchor | Common | Knockback taken -80%, max HP +30%, move speed -15%, jump -20% | no |
-| 10 | Featherweight | Uncommon | Size -40%, move speed +40%, jump +15%, max HP -40% (60), knockback taken +100% | yes |
-| 11 | Powder Keg | Uncommon | Bullets explode (3u radius, hurts you too), damage +25%, bullet speed -35%, reload +25% | yes |
-| 12 | Pepperpot | Uncommon | 5 pellets per shot at 8 damage each, +-14 deg fan, 0.6 s range | yes |
-| 13 | Tithe | Uncommon | Heal 100% of damage dealt (max 70/round), damage -45% (11) | no |
-| 14 | Wrecking Ball | Uncommon | Bullet radius x3, knockback x3 (700 cap), speed -45%, fire rate -40% | no |
-| 15 | Trebuchet | Uncommon | Lobbed shells: gravity x6, damage +90% (38), radius x2, magazine -3 (2) | no |
-| 16 | Kickback | Uncommon | Each shot shoves you back 420/s; your hits knock back x2 | no |
-| 17 | Sleight of Hand | Uncommon | Blocking a bullet refills your magazine; reload +50% (3.0 s) | no |
-| 18 | Porcupine | Uncommon | When hit, fire 10 shards (10 damage each, 1 s cooldown); move speed -20% | no |
-| 19 | Cornered | Uncommon | At 40% HP or less: damage +60%, fire rate +50%, move speed +30% | no |
-| 20 | Prism Shot | Rare | Bounces +2; a bullet's first bounce splits it into 3 (children at 70% damage) | yes |
-| 21 | Return Policy | Rare | Blocked bullets return aimed at their shooter, x1.5 speed and damage; block cooldown +50% | yes |
-| 22 | Bricklayer | Rare | A successful block conjures a 4u stone slab under your feet for 5 s; block window -0.1 s | no |
-| 23 | Parting Gift | Rare | When you die, a 0.5 s fuse then a 4u blast for 60 damage (kills them too = draw) | no |
-| 24 | Vendetta | Rare | Damage +50%, magazine +2, fire rate +20%, max HP -25%; vanishes when you win a round | no |
-| 25 | Last Call | Rare | Last bullet of each magazine: damage x2 (40), size x2.5, speed x1.3, knockback x2.5; reload +25% | no |
-
-Rarity count: 9 Common, 10 Uncommon, 6 Rare.
-
----
-
-## Cards
-
-Field legend: **Max** = how many copies may be picked. **Impl** = stats and hooks. **Combos** = pairs from this list. **Risks** = balance and degenerate stacks. Cap interactions refer to "Global balance rules" below.
-
-### 1. Hair Trigger (Common, v1)
-- **Text:** Spray twice as many, half as strong.
-- **Effect:** fireRate +100% (3 to 6/s), magazine +100% (5 to 10), damage -40% (20 to 12), spread +4 degrees (each bullet gets a random +-4 degree offset).
-- **Math:** burst 72/s (baseline 60), magazine 120 damage, firing time unchanged at 1.67 s, sustained 120 / (1.67 + 2.0) = 32.7 dps (+20%). A kill takes 9 hits instead of 5, and each hit knocks back only 60% as hard (156 /s).
-- **Max:** 2. A second copy hits the caps: fireRate 8/s (cap), magazine 12 (cap), damage 8 (floor), spread 8 degrees; burst 64, magazine 96, 13 hits to kill. It is a firehose, not a stronger card.
-- **Impl:** stats only (fireRate, magazine, damage, spread).
-- **Combos:** Pepperpot (the burst cap decides the result, see Pepperpot), Pinball and Prism Shot (more bouncing bullets, more self-hits), Tithe (many small heals, capped), Sleight of Hand (a 10-round magazine refilled by one block), Kickback (6 recoil impulses per second).
-- **Risks:** Weak to Return Policy (spam gets reflected and amplified) and to Porcupine (more hits on the porcupine, but each one only 12). With Kickback the velocity cap exists so you cannot hover. Bullet count on screen rises, so the live-bullet cap applies.
-
-### 2. Pinball (Common, v1)
-- **Text:** Bullets bounce four times and hit harder every time, you included.
-- **Effect:** bounces +4, damage -25% (20 to 15 at launch), bulletLifetime +1 s (4 s). onBounce: the bullet gains +30% of its launch damage per bounce (15, 19.5, 24, 28.5, 33). Owner immunity ends at the first bounce, so a bounced bullet can hit you.
-- **Math:** a direct hit is 15 (weaker than baseline), a once-bounced bank shot is 19.5, a four-times-bounced bullet is 33. Magazine direct damage 75, so the card rewards bank shots. Sustained direct dps 20.
-- **Max:** 2. Second copy: bounces +4 more (cap 6), launch damage 10, growth +60% of launch per bounce: 10, 16, 22, 28, 34, 40 (per-hit cap), 40.
-- **Impl:** stats (bounces, damage, bulletLifetime) plus hook `onBounce` (adds to the bullet's damage). The core bounce physics must exist anyway.
-- **Combos:** Prism Shot (more bounces for the children), Powder Keg (explosive bullets bounce until their last allowed bounce unless they touch a player, so bank shots detonate near the target), Bricklayer (the slab is a bounce surface), Wrecking Ball (bouncing boulders), Trebuchet (arcing bounces off platforms).
-- **Risks:** In an open arena bounces need platforms, so the card is a map-reading card and useless in empty sky; a platform cluster is where it shines and where you hurt yourself. Self-hits: shooting at a platform edge next to you returns the bullet within 0.3 s at 15 to 20 damage. Hair Trigger plus Pinball fills the area with bullets; live-bullet cap 60 and lifetime cap 5 s apply. Block destroys any of them.
-
-### 3. Thick Skin (Common, v1)
-- **Text:** Twice the health, a bigger target, and a long fall.
-- **Effect:** maxHp +100% (100 to 200), size +30% (32 to 42 logical units), moveSpeed -25%. Full heal at round start. Out-of-bounds costs 30% of max HP, so a fall costs 60.
-- **Math:** 10 baseline hits to kill (was 5); sustained 27 dps needs 7.3 s of perfect hits.
-- **Max:** 2. Second copy: maxHp +200% (300, capped at 250), size +60% (cap 1.6), moveSpeed -50% (floor -40%); a fall costs 75.
-- **Impl:** stats only (maxHp, size, moveSpeed).
-- **Combos:** Tithe (bigger buffer), Scramble (slow body with a speed burst), Anchor (an immovable wall), Porcupine (soaks hits and retaliates), Parting Gift (lives long enough to matter), Pinball (can afford self-hits).
-- **Risks:** The safe pick everyone wants, hence the real costs: slow, large and fragile to shoves (its OOB damage scales with its HP). Weak to Wrecking Ball and Powder Keg (big target, big out-of-bounds bill). The risk is rounds that drag (Tithe plus two Thick Skins): see the round-timer open question.
-
-### 4. Needle Rounds (Common)
-- **Text:** Fast, flat, hard-hitting bullets. Two in the clip.
-- **Effect:** bulletSpeed +120% (900 to 1980/s), bulletGravity -100% (flat), bulletRadius -40% (5 to 3), damage +60% (32), magazine -3 (5 to 2).
-- **Math:** burst 96/s, magazine 64, sustained 64 / (0.67 + 2.0) = 24 dps (-12%). Four hits to kill (three hits is 96). Each hit knocks back 416 /s. A 640-unit shot crosses in 0.32 s, dodgeable but only with a read.
-- **Max:** 1.
-- **Impl:** stats only. NET/host: swept collision (about 33 units per tick at this speed, so the 8-unit substeps in DESIGN are enough).
-- **Combos:** Last Call (every second bullet is boosted but the 40 per-hit cap clamps it), Hair Trigger (magazine +5 cancels the penalty, bullets thinner still), Pinball (long, fast bounces), Wrecking Ball is a poor pair (opposite shapes).
-- **Risks:** Unavoidable damage at close range, so the 2-round magazine is the price: miss twice and you wait 2.0 s. Give the thin bullet a bright trail so it stays readable.
-
-### 5. Tight Guard (Common, v1)
-- **Text:** Block whenever you like, but only for a heartbeat.
-- **Effect:** blockCooldown -75% (4.0 to 1.0 s, the floor), blockWindow -50% (0.30 to 0.15 s). Block uptime goes from 7.5% to 15%.
-- **Max:** 1.
-- **Impl:** stats only.
-- **Combos:** Return Policy (net cooldown 3.0 s, window 0.15 s: the parry build), Sleight of Hand (refill every parry), Bricklayer (a slab per parry, window shorter still), Scramble.
-- **Risks:** A 0.15 s window (9 ticks) is hard to hit and you cannot shoot while it is open, so spam costs you trigger time. The danger is the parry engine (Tight Guard plus Return Policy plus Sleight of Hand); see scariest stacks.
-
-### 6. Scramble (Common, v1)
-- **Text:** Getting hit lights a fire under you.
-- **Effect:** maxHp -20% (80). onDamaged (any damage greater than 0, out-of-bounds included): timed modifier for 2.5 s of moveSpeed +100% and fireRate +50%. A new hit refreshes the timer, it does not stack.
-- **Math:** while active, burst 90/s and the magazine empties in 1.11 s; sustained 100 / (1.11 + 2.0) = 32 dps (+18%). Speed +100% is 660 /s, enough to cross the screen in 2 s. After an out-of-bounds throw-back it gets you back into the fight.
-- **Max:** 1 (a second copy would only refresh the same timed modifier).
-- **Impl:** hook `onDamaged` plus a timed modifier. Timed-modifier list only.
-- **Combos:** Featherweight (small, fast; both HP penalties collapse into the 60 HP floor), Thick Skin (slow body, burst of speed), Cloudstep, Hair Trigger (the 8/s fire-rate cap applies).
-- **Risks:** A reaction card, so it never snowballs on its own. The skilled counter is not hitting it at all. Self-damage and explosions trigger it too, which makes Powder Keg owners faster after their own blast.
-
-### 7. Cloudstep (Common)
-- **Text:** Three jumps. The ground feels heavy.
-- **Effect:** airJumps +2 (3 jumps in total; each air jump has 90% of normal jump velocity and resets vertical speed), moveSpeed -25%, maxHp -20% (80).
-- **Max:** 1 (cap is 3 air jumps).
-- **Impl:** stats only (airJumps, moveSpeed, maxHp). Needs an air-jump counter in the movement code, reset on landing.
-- **Combos:** Featherweight (very hard to pin down), Trebuchet (lob from height), Anchor (an air-borne anchor), Scramble. Counters the open arena: you can climb back to a platform after a shove and avoid a fall.
-- **Risks:** Evasion archetype. In an open arena a Cloudstep player can climb above the screen: the soft ceiling (see DESIGN) stops anyone hiding up there and bullets still reach it. The ground speed and HP penalties are the price; explosions and Pepperpot punish a floating target.
-
-### 8. Paper Dragon (Common)
-- **Text:** Hits like a dragon. Breaks like paper.
-- **Effect:** damage +100% (20 to 40), maxHp -40% (60), magazine -2 (3).
-- **Math:** burst 120/s (under the 130 cap), magazine 120 damage, sustained 120 / (1.0 + 2.0) = 40 dps (+46%). Three hits kill a 100 HP player (0.67 s of perfect hits); the owner dies to three baseline hits. Each hit knocks back 520 /s. Out-of-bounds costs the owner only 18.
-- **Max:** 1 (a second copy would exceed the 40 per-hit cap and the 60 HP floor).
-- **Impl:** stats only.
-- **Combos:** Hair Trigger (the burst cap clamps it: damage 32 and 6/s would be 192, so damage drops to 21.7), Needle Rounds (damage 51 clamps to 40), Featherweight (HP penalties collapse into the floor, 60 HP either way), Vendetta, Cornered.
-- **Risks:** The scariest "pure" glass cannon. Contained by the 40 per-hit cap (never fewer than 3 hits to kill 100 HP), the burst cap, and the fact that the owner has 60 HP; Pepperpot and Powder Keg punish its small margin of error. A mutual-kill draw is likely and is fine.
-
-### 9. Anchor (Common)
-- **Text:** Planted. Nothing pushes you around.
-- **Effect:** knockbackTaken -80% (hits and explosions push you at 20% strength), maxHp +30% (130), moveSpeed -15%, jumpVelocity -20%. Your own recoil and the out-of-bounds throw-back are not affected.
-- **Max:** 1.
-- **Impl:** stats only (knockbackTaken, maxHp, moveSpeed, jumpVelocity).
-- **Combos:** Powder Keg (you still take the damage but not the shove, so rocket jumps are gone), Thick Skin, Cloudstep (three jumps and a firm landing, but both subtract ground speed), Kickback is a bad pair (your recoil still works, their hits do not).
-- **Risks:** The counter-pick to Wrecking Ball, Kickback and Featherweight shoves; with no shove pressure it is a mild tank. Slow and low jump make it vulnerable to Trebuchet shells and Needle Rounds.
-
-### 10. Featherweight (Uncommon, v1)
-- **Text:** A speck that darts around. Blown away by anything.
-- **Effect:** size -40% (floor 0.6; 19 logical units), moveSpeed +40% (462 /s), jumpVelocity +15%, maxHp -40% (60, the floor), knockbackTaken +100% (hits push you twice as far). Out-of-bounds costs 18 HP.
-- **Math:** hitbox area 36% of baseline, 3 hits to kill, a 20-damage hit pushes you 520 /s (a 40-damage hit hits the 700 cap).
-- **Max:** 1.
-- **Impl:** stats only. Size affects hitbox, sprite and platform contact; confirm gaps still work.
-- **Combos:** Scramble and Paper Dragon (HP penalties collapse into the 60 floor), Cloudstep, Kickback, Return Policy (small body, rely on parries). Anchor offsets its shove penalty (+100% - 80% = x1.2).
-- **Risks:** The evasion archetype; the counter is area damage (Powder Keg, Pepperpot) and shoves (Wrecking Ball sends it out of the screen). Featherweight plus Cloudstep plus Scramble is the untouchable-looking stack, see scariest stacks.
-
-### 11. Powder Keg (Uncommon, v1)
-- **Text:** Every bullet is a bomb. Don't stand too close.
-- **Effect:** damage +25% (25), bulletSpeed -35% (585 /s), reloadTime +25% (2.5 s). onBulletHit: the bullet detonates on touching a player, destructible block or terrain (if it still has bounces and touches terrain, it bounces instead and detonates on its last contact, or on touching a player). Explosion radius 3u (96 logical units), damage 25 with the standard falloff (100% within 1u, 40% at the edge), hits everyone in the radius **including you**, once per player per bullet, no separate direct-hit damage. Radial knockback 400 * (25/20) = 500 /s at the centre. Blocks destroy the bullet before it detonates. Destroys destructible blocks in the radius.
-- **Math:** sustained 125 / (1.67 + 2.5) = 30 dps at centre hits, plus splash on near misses. At 1.5u (48 logical units) from your own blast you take 21 and are shoved about 420 /s; point-blank costs you 25. Rocket jumps are possible and cost HP.
-- **Max:** 1.
-- **Impl:** stat mods plus hook `onBulletHit` (`ctx.explode(x, y, radius, damage)`, flag `explosive` on the bullet). One-shot explosion event for VFX.
-- **Combos:** Pinball (bank-shot bombs), Prism Shot (children explode at 60% radius and damage), Kickback (rocket-jump), Trebuchet (mortar), Last Call (the big shot is a bigger blast), Anchor (no self-shove), Tithe (heals from the damage dealt to the opponent only).
-- **Risks:** Area damage forgives bad aim and counters Featherweight. The self-damage is the leash: close fights hurt you. Do not allow chained detonations (an explosion does not trigger other bullets). The per-shot cap and the one-explosion-per-bullet rule contain Pepperpot plus Powder Keg.
-
-### 12. Pepperpot (Uncommon, v1) [replaces Double Barrel]
-- **Text:** Five pellets per shot. Get close.
-- **Effect:** bulletsPerShot +4 (5 pellets), spread: pellets fan evenly across +-14 degrees plus 1.5 degrees of jitter, damage -60% (8 per pellet), bulletLifetime set to 0.6 s on the pellets (range 540 logical units). A shot costs 1 ammo. All pellets share one `shotId`.
-- **Math:** burst 3 * 5 * 8 = 120/s (under the 130 cap), magazine up to 200. Pellets are about 7 degrees apart: at 200 units from the target about 2 hit (16), at 100 units 2 to 3 (16 to 24), point-blank all 5 (40). Pellets knock back 104 /s each, so a point-blank hit shoves 520 /s (nearly a full Wrecking Ball without the cost).
-- **Max:** 1.
-- **Impl:** hook `onShoot` (clone the bullet bulletsPerShot-1 times with an angle offset; generation 0 siblings), stats for damage and lifetime.
-- **Combos:** Hair Trigger (bursts: 6/s * 5 * 8 = 240 exceeds the cap, so fireRate falls to 3.25/s; you keep the 10-shot magazine), Powder Keg (5 small explosions, the per-shot cap of 60 per target applies), Prism Shot (15 bullets from one bounce, live-bullet cap), Return Policy is its hard counter (five reflected pellets at 12 damage, capped at 60), Wrecking Ball is a bad fit (tiny pellets, big bullets).
-- **Risks:** Range-gated by design. The danger is multiplication: the burst cap, the damage floor of 8, the per-shot cap and the live-bullet cap handle it. Pellets bounce only with Pinball (and then fill the screen).
-
-### 13. Tithe (Uncommon)
-- **Text:** Every hit heals you for what it takes.
-- **Effect:** damage -45% (20 to 11). onBulletHit (on a hit that damages the opponent, not blocked, not self-damage): heal the shooter for 100% of the damage dealt. Healing per round capped at 70 HP, no overheal. Explosion damage dealt to the opponent counts.
-- **Math:** each hit is a swing of 22 HP (11 dealt, 11 healed). The opponent needs 9.1 hits to die; you net-heal until the 70 cap, then it is a plain 11-damage gun. Sustained 55 / 3.67 = 15 dps and 15 HP/s healed when everything lands.
-- **Max:** 1.
-- **Impl:** hook `onBulletHit`; stat damage.
-- **Combos:** Hair Trigger (damage floor 8 and the heal cap bound it), Thick Skin (the buffer lasts longer), Pepperpot (pellets heal 8 each, cap applies), Powder Keg, Cornered (heal pushes you out of the low-HP bonus, so they fight each other).
-- **Risks:** Sustain stalls rounds, the classic degenerate case. The 70 HP cap and the damage penalty are deliberate; the round timer question exists mainly for this card. Healing on blocked bullets is zero.
-
-### 14. Wrecking Ball (Uncommon)
-- **Text:** Huge, slow bullets that launch people off the map.
-- **Effect:** bulletRadius +200% (5 to 15), knockback +200% (x3: 780 /s before the 700 cap), bulletSpeed -45% (495 /s), fireRate -40% (1.8/s). Damage unchanged (20).
-- **Math:** burst 36/s, sustained 100 / (2.78 + 2.0) = 21 dps (-23%). A hit from a Wrecking Ball sends a target 700 /s: on the ground friction stops them within about 80 units, in the air they fly 130 units against full air control and 600 unopposed. Out-of-bounds is 30 damage, so a well-placed hit on an edge is worth 50.
-- **Max:** 1.
-- **Impl:** stats only (bulletRadius, knockback, bulletSpeed, fireRate).
-- **Combos:** Kickback (knockback cap x3 clamps the sum), Pinball (bouncing boulders), Featherweight victims (shoved twice as far), Bricklayer slabs (a big bullet bounces off them). Countered by Anchor and by Cloudstep (climb back).
-- **Risks:** The knock-off card: contained by the x3 knockback cap, the 700 impulse cap, and the 2 s out-of-bounds immunity (a victim can be thrown out at most once per 2 s, 15 damage per second at worst). Big bullets are slow and easy to block or dodge. Big bullets also hit platforms sooner, which makes bounce builds more dangerous to the owner.
-
-### 15. Trebuchet (Uncommon)
-- **Text:** Lob a shell. Hard to aim, harder to survive.
-- **Effect:** bulletGravity +500% (80 to 480/s^2), damage +90% (38), bulletRadius +100% (10), magazine -3 (2). Bullet speed unchanged (900/s); at 45 degrees a shell flies about 1700 units on level ground.
-- **Math:** burst 114/s, magazine 76, sustained 76 / (0.67 + 2.0) = 28.5 dps. Three hits to kill. Shells can arc 400 units above the firing height and descend onto cover.
-- **Max:** 1.
-- **Impl:** stats only.
-- **Combos:** Powder Keg (mortar), Cloudstep (high ground), Pinball (bounce off a platform), Last Call (the second shell is boosted, capped at 40), Hair Trigger (magazine +5).
-- **Risks:** Hard to aim, so the damage bonus is the price. Shells fired above the top of the screen stay alive (top removal line is 600 units up). With Powder Keg, expect bombs: the per-hit cap (40) applies to the explosion.
-
-### 16. Kickback (Uncommon)
-- **Text:** Every shot shoves you backwards. Every hit shoves them harder.
-- **Effect:** recoil +380 (40 to 420 /s opposite to aim), knockback +100% (x2). Total speed gained from recoil in one second is capped (1000 /s overall impulse cap applies).
-- **Math:** five shots in 1.67 s give 2100 /s of cumulative recoil impulse; you cannot hover because gravity (1900 /s^2) eats 420 /s in 0.22 s. Firing downward gives about 46 units of lift per shot, enough to cross a small gap.
-- **Max:** 1.
-- **Impl:** stats only (recoil, knockback).
-- **Combos:** Powder Keg (rocket jumps), Wrecking Ball (the knockback cap clamps), Hair Trigger (a recoil stream that can push you off the screen), Cloudstep, Featherweight. A bad pair with Anchor.
-- **Risks:** It is a self-OOB card: sustained fire toward the centre pushes you out of bounds (30 damage and a 2 s immunity). That is the price. Possible stalemate where both players are blown to the edges.
-
-### 17. Sleight of Hand (Uncommon) [replaces Greased Bolt]
-- **Text:** Block a bullet and your gun is full again.
-- **Effect:** reloadTime +50% (3.0 s). onBlock (first bullet absorbed in a block; once per block): instantly refill the magazine and cancel any reload.
-- **Math:** without blocks, sustained falls to 100 / (1.67 + 3.0) = 21 dps (-22%). With a refill every 4 s the card is positive, with Tight Guard it is a free reload every second.
-- **Max:** 1.
-- **Impl:** hook `onBlock`; stat reloadTime.
-- **Combos:** Tight Guard (parry and refill), Return Policy (parry, reflect and refill), Hair Trigger (a 10-round magazine refilled), Pepperpot, Bricklayer.
-- **Risks:** A bait-and-punish card: opponents can hold their fire and you must reload for 3.0 s. The parry engine with Tight Guard and Return Policy is the scariest block build; the refill needs a real absorbed bullet, so nobody gets infinite ammo from empty blocks.
-
-### 18. Porcupine (Uncommon) [replaces Chain Vest]
-- **Text:** Hit me and I'll hit you back, ten ways.
-- **Effect:** moveSpeed -20%. onDamaged (damage from the opponent's bullet or explosion; not out-of-bounds, not self-damage; 1.0 s internal cooldown): spawn a ring of 10 shards from your centre, each 10 damage, 700 /s, 0.4 s lifetime (280 units), generation 1 (no bounce, no split, no chain). Shards share one `shotId` (60 per-shot cap).
-- **Math:** shards are 36 degrees apart: at 100 units from you the opponent takes 1 shard (10), point-blank 2 (20). At most 10 extra damage per second of fighting.
-- **Max:** 1.
-- **Impl:** hook `onDamaged` with `ctx.spawnBullet`.
-- **Combos:** Thick Skin (a tank that bites), Anchor (immovable spiky wall), Tithe (shard hits heal), Return Policy (hurt them even if they live through the reflect), Scramble. Hurts Hair Trigger and Pepperpot users the most.
-- **Risks:** Punishes close range, harmless at distance. The cooldown and the 10 damage shards keep it from being a free damage source. Shards that miss do not return, so it cannot hit you.
-
-### 19. Cornered (Uncommon) [replaces Warm Barrel]
-- **Text:** The closer to death, the nastier you get.
-- **Effect:** conditional modifier while HP is at or below 40% of max: damage +60% (32), fireRate +50% (4.5/s), moveSpeed +30%. Re-evaluated whenever HP changes, including heals.
-- **Math:** the burst cap (130) clamps 4.5 * 32 = 144, so damage becomes 28.9 while active; sustained 144 / (1.11 + 2.0) = 46 dps (+70%). With 100 max HP the bonus starts at 40 HP, two baseline hits from death.
-- **Max:** 1.
-- **Impl:** `onDamaged` (and heal) toggles a conditional modifier; no stats needed on the card itself.
-- **Combos:** Scramble (hit once, shoot 6.75/s: the fire-rate cap 8/s applies), Paper Dragon (low HP from the start: 60 max HP means it is active at 24 HP), Thick Skin (the threshold is 80), Tithe (a heal can switch the bonus off).
-- **Risks:** A comeback tool that rewards playing on a knife edge. Low risk of snowballing because it only works near death; the cost is that you are near death. Do not trigger it on Parting Gift's fuse.
-
-### 20. Prism Shot (Rare, v1)
-- **Text:** A bullet's first bounce splits it into three.
-- **Effect:** bounces +2. onBounce (generation 0 bullets, their first bounce only): spawn two children at +-25 degrees from the reflected direction, each with 70% of the parent's current damage and generation 1; the parent continues. Generation 1 bullets cannot split again but keep their remaining bounces. Children do not inherit Pinball's growth, and an explosive child (Powder Keg) detonates at 60% radius and damage.
-- **Math:** up to 240% of the bullet's damage if all three land; realistically one or two. The per-shot cap of 60 on any one target is rarely reached.
-- **Max:** 1.
-- **Impl:** hook `onBounce`; stat bounces.
-- **Combos:** Pinball (bounces 6, growth on the parent), Pepperpot (up to 15 bullets from one volley), Powder Keg, Trebuchet, Hair Trigger.
-- **Risks:** Coverage card; the generation rule is the main protection from Tear-Detonator-style runaway (Isaac). Children bounce too, so a platform cluster fills with bullets that come back at you. Live-bullet cap (60) stops further splits.
-
-### 21. Return Policy (Rare, v1)
-- **Text:** Blocked bullets come back, aimed at whoever fired them, faster and harder.
-- **Effect:** blockCooldown +50% (6.0 s). onBlock: each enemy bullet absorbed in the window (up to 5 per block) changes owner to you, is re-aimed at the opponent's current position, speed x1.5, damage x1.5 (clamped to the 40 per-hit cap), `reflected = 1` (it cannot be reflected again, which prevents ping-pong). Explosions and shards-as-areas are not reflected; only bullets. The reflected bullet gets a fresh 0.15 s of owner immunity for you.
-- **Math:** a 20-damage bullet returns as 30 at 1350 /s. A Pepperpot volley of five 8-damage pellets returns as five 12-damage pellets (60, the per-shot cap).
-- **Max:** 1.
-- **Impl:** hook `onBlock(ctx, bullet)` mutates owner, velocity and flags. NET: easy (existing bullets just change fields).
-- **Combos:** Tight Guard (net cooldown 3.0 s), Sleight of Hand (reflect and refill), Pinball (reflected bullets keep bouncing, and may hit you), Thick Skin. Hard counter to Hair Trigger and Pepperpot.
-- **Risks:** Strong against bullet spam; a mistimed block costs 6.0 s, which is the real downside. A reflected Powder Keg bomb is destroyed by the block, not reflected (so it does not blow up on its owner; explosions are not bullets). Bound by `reflected` and the 5-bullet cap.
-
-### 22. Bricklayer (Rare)
-- **Text:** A good block builds you a stone slab to stand on.
-- **Effect:** blockWindow -0.1 s (0.2 s). onBlock (first bullet absorbed in a block; once per block): spawn a slab 4u wide and 0.5u tall (128 x 16 logical units) with its top edge at your feet. It is solid for both players, HP 60 (destructible), lasts 5 s, one slab per player at a time; shifted down until it does not overlap a player. It reflects bullets like any platform (a bounce surface for Pinball).
-- **Math:** in the open arena a slab is a lifeline: a mid-air parry creates a platform under you, so you do not fall out of bounds, and a bounce surface under your own gun.
-- **Max:** 1.
-- **Impl:** hook `onBlock` creates a world object (destructible block with a timer and owner). NET: medium (one new entity type in the snapshot, reusing the destructible-block code).
-- **Combos:** Pinball and Prism Shot (a bounce surface you control), Cloudstep, Tight Guard, Sleight of Hand. Countered by Powder Keg (60 HP) and Wrecking Ball.
-- **Risks:** The opponent can use the slab too, and it blocks line of sight; short lifetime (5 s), 60 HP and the one-slab rule keep turtling in check. If playtests show stalling, shorten to 3 s.
-
-### 23. Parting Gift (Rare)
-- **Text:** If you go down, they don't walk away clean.
-- **Effect:** when damage would kill you (`onDamaged` lethal), you die as normal and a 0.5 s fuse (visible ring) starts at your position. When it ends, an explosion of radius 4u (128 logical units) deals a flat 60 damage (no falloff, no immunity) and a 600 /s shove. Round resolution waits for the fuse. If the blast kills the opponent, both are dead and the round is a **draw** (restart, no point, no quiz, no card). If the opponent survives, they win normally.
-- **Math:** the winner can leave: 0.5 s at 330 /s is 165 units, more than the 128 radius, if they react. At 60 HP or less the blast is lethal, so the card punishes finishing someone off at low HP in melee range. It does nothing against an opponent at 100 HP.
-- **Max:** 1.
-- **Impl:** hook `onDamaged` (lethal flag) plus the delayed-event queue; the round state machine handles the pending fuse (DESIGN.md section 2).
-- **Combos:** Thick Skin (live longer, die close), Cornered, Featherweight (dies near the enemy), Powder Keg (shares the explosion code).
-- **Risks:** Draw handling (resolved: restart). It can be used to deny a match point when trailing, at the cost of getting no card that round. If it becomes a stalling tool, reduce damage to 40. Self-damage does not apply (you are dead).
-
-### 24. Vendetta (Rare) [replaces Ledger]
-- **Text:** A surge of power that lasts until you win a round.
-- **Effect:** damage +50% (30), magazine +2 (7), fireRate +20% (3.6/s), maxHp -25% (75). onKill (you win the round): the card is removed from your build before the next round (`ctx.removeCard()`), and may be offered again later.
-- **Math:** burst 108/s (under the cap), magazine 210 (under the 240 budget), sustained 210 / (1.94 + 2.0) = 53 dps (+95%). Four hits kill a 100 HP player. The owner dies to four baseline hits.
-- **Max:** 1.
-- **Impl:** stats plus hook `onKill` (`ctx.removeCard`). This is the only card using `onKill`.
-- **Combos:** Paper Dragon (HP collapses to the 60 floor), Hair Trigger, Cornered, Tithe. Pairs naturally with comeback picks.
-- **Risks:** It is a strong, temporary comeback tool that costs itself on the win. If you keep losing you keep it, which stacks with later picks; the caps still bound it. Replaces Ledger because Ledger gave nothing on the round you picked it.
-
-### 25. Last Call (Rare)
-- **Text:** Your last bullet is a cannonball.
-- **Effect:** reloadTime +25% (2.5 s). onShoot: when the shot empties the magazine, that bullet gets damage x2 (40, the cap), bulletRadius x2.5, bulletSpeed x1.3, knockback x2.5 (700 cap).
-- **Math:** baseline magazine 4 * 20 + 40 = 120; with three earlier hits the finisher kills (60 + 40 = 100). Sustained 120 / (1.67 + 2.5) = 28.8 dps. The opponent can see the big bullet coming and block it.
-- **Max:** 1.
-- **Impl:** hook `onShoot` (inspect remaining ammo, modify the bullet).
-- **Combos:** Powder Keg (the finisher detonates at 40 damage, so the blast hurts more, including you), Trebuchet and Needle Rounds (every second shot is boosted; the 40 cap clamps), Wrecking Ball (the finisher is a guaranteed knock-off), Hair Trigger (longer wait, same bonus), Sleight of Hand (a refill resets the count).
-- **Risks:** Creates a tell, which is the skill expression. The per-hit cap (40) means it cannot one-shot at 100 HP and cannot be amplified by Paper Dragon.
-
----
-
-## Version 1 set: the 10 and why
-
-**Hair Trigger, Pinball, Thick Skin, Tight Guard, Scramble, Featherweight, Powder Keg, Pepperpot, Prism Shot, Return Policy.**
-
-What changed from revision 1: nothing in the set except **Double Barrel became Pepperpot** (renamed and extreme: 5 pellets instead of 2). I re-checked whether the rework justified swapping others in. Wrecking Ball and Anchor are cheaper and show off the new knockback system, but Featherweight (knockbackTaken), Powder Keg (explosion shove) and Pepperpot (point-blank shove) already exercise it in v1, so the set stays.
-
-| Requirement | How the set meets it |
-|---|---|
-| Cheap to implement | 5 of 10 are pure stat cards (Hair Trigger, Thick Skin, Tight Guard, Featherweight; Pinball needs one tiny hook). Scramble needs only the timed-modifier list. The rest need one small hook each. |
-| Different axes | Offence: Hair Trigger, Pepperpot. Defence: Thick Skin. Mobility: Featherweight, Scramble. Bullet behaviour: Pinball, Prism Shot. Explosions and shoves: Powder Keg. Block interaction: Tight Guard, Return Policy. |
-| Hooks exercised | `onShoot` (Pepperpot), `onBulletHit` (Powder Keg), `onBounce` (Pinball, Prism Shot), `onBlock` (Return Policy), `onDamaged` (Scramble). `onKill` is left out (only Vendetta uses it, so it waits for v1.1). |
-| At least two real combos | **Pinball + Prism Shot** (bounces 6, split children, self-hit chaos). **Pinball + Powder Keg** (bank-shot bombs, risky for the owner). **Tight Guard + Return Policy** (parry engine, net cooldown 3.0 s). **Hair Trigger + Pepperpot** (exercises the burst cap). **Featherweight + Scramble** (small and fast; HP penalties collapse into the 60 floor). |
-| At least one trade-off | Every v1 card has a real downside: Hair Trigger (damage and spread), Pinball (damage and self-hits), Thick Skin (size, speed, bigger falls), Tight Guard (window), Scramble (HP), Featherweight (HP and shoves), Powder Keg (speed, reload, self-damage), Pepperpot (range and damage), Prism Shot (self-hits), Return Policy (cooldown). |
-| Open arena and self-damage | Pinball, Powder Keg and Prism Shot test self-damage; Featherweight and Powder Keg test knockback and out-of-bounds; Thick Skin tests the HP-scaled fall cost. |
-| Pool size | 10 cards with 5-card offers means every offer shows half the pool. The v1 pool has 5 Common, 3 Uncommon, 2 Rare. |
-
-What v1 leaves for later and why: Paper Dragon, Needle Rounds, Cloudstep and Anchor are cheap stats but add little to proving the system; Wrecking Ball and Kickback are cheap but depend on tuned knockback; Bricklayer needs world-object work; Parting Gift needs the round state machine's fuse rule; Vendetta needs `onKill` and `removeCard`; Tithe, Porcupine, Cornered, Sleight of Hand and Last Call are single-hook cards that can come as soon as the hook set is stable.
-
-## Global balance rules
-
-**Stat stacking**
-- Percent modifiers on the same stat add: `final = (base + flat) * (1 + sum of percents)`. They never multiply with each other (this is the main protection against +100% cards compounding). Different stats multiply by nature (fire rate times damage), which is why derived caps exist.
-- Timed and conditional modifiers refresh rather than stack unless a card says otherwise. Each source id appears once per target.
-- Hard caps and floors (clamped after all modifiers, in this order):
-
-| Stat | Floor / cap |
-|---|---|
-| damage (launch) | 8 to 40 (0.4x to 2x baseline) |
-| damage per hit (all sources: growth, multipliers, explosions) | 40 |
-| damage from one trigger pull to one target (all pellets, children, explosions, reflected) | 60 |
-| fireRate | 1 to 8 shots/s |
-| magazine | 1 to 12 |
-| reloadTime | 0.8 to 4.0 s |
-| bounces | 0 to 6 |
-| bulletSpeed | 0.5x to 2.5x |
-| bulletRadius | 0.5x to 3x |
-| bulletGravity | 0 to 8x |
-| bulletLifetime | 0.4 to 5 s |
-| bulletsPerShot | 1 to 6 |
-| spread | 0 to 20 degrees |
-| knockback dealt | 0.25x to 3x, resulting hit impulse 700 /s max |
-| knockbackTaken | 0.2x to 2.5x |
-| recoil | 0 to 600 /s per shot, and total speed from impulses 1000 /s |
-| maxHp | 60 to 250 |
-| moveSpeed | -40% to +100% |
-| jumpVelocity | -30% to +40% |
-| airJumps | 0 to 3 |
-| size | 0.6 to 1.6 |
-| blockCooldown | 1.0 to 10 s |
-| blockWindow | 0.15 to 0.8 s |
-| healing per round | 70 HP |
-| live bullets per player | 60 (extra children and shards are simply not spawned) |
-
-- **Derived limits** (resolved at stat recompute, in this order):
-  1. *Burst cap:* `fireRate * damage * bulletsPerShot <= 130` (2.2x baseline burst). If exceeded, lower damage first (not below 8), then fireRate.
-  2. *Magazine budget:* `magazine * bulletsPerShot * damage <= 240` (2.4x baseline max HP). If exceeded, lower magazine.
-- **Minimum time to kill:** the hit cap (40) and HP floor (60) guarantee at least 3 hits for a 100 HP player and at least 2 hits for a 60 HP player; the per-shot cap (60) means no single trigger pull kills a 100 HP player.
-- Penalties that overlap past a floor are simply wasted (Featherweight, Scramble, Paper Dragon, Vendetta and Cloudstep all push max HP toward the 60 floor). That is intended: a dramatic card is not made unplayable by a second one.
-
-**Projectile rules**
-- Cards that spawn bullets (Pepperpot, Prism Shot, Porcupine) tag them with `generation` and `shotId`. Generation 1 bullets cannot spawn or split further.
-- Bullet lifetime 3 s base. Bullets are removed outside the screen (64 units past left/right/bottom, 600 above the top).
-- Self-damage: see "Rules every card inherits". Reflected bullets change owner.
-- Fast bullets need swept collision on the host.
-
-**Hard bans in this card set** (unfun in a 1v1, see principle 12): stun, silence, blind, invisibility, slows, damage over time you cannot see coming, and any single hit or trigger pull that can kill from full HP at 100 max HP.
-
-**Rarity and offer**
-- Offer size: 5 cards for the loser, drawn without duplicates; cards at their max stacks are excluded. A wrong quiz answer removes 3 of the 5 at random and the loser picks from the remaining 2 (DESIGN.md section 12).
-- Draw weights per slot: Common 55, Uncommon 35, Rare 10. Fall back to the next rarity if a tier is empty.
-- Catch-up dial: if the picker is 2 or more rounds behind, weights become Common 45, Uncommon 35, Rare 20. Not larger, so a rare is never guaranteed.
-- A player makes at most 4 picks per match (first to 5 wins, so at most 4 losses before the match ends); so a stack is at most four cards, plus the duplicate exceptions. At base weights each offer shows 0.5 Rares on average.
-- Show both players' collected cards to both at all times; open information makes combos readable. Show effective (post-cap) values in the HUD.
-
-**Duplicates policy**
-- Every card has a `maxStacks`. Default 1. Only **Hair Trigger, Pinball and Thick Skin may be picked twice** (their second copies are listed per card, and they hit caps on purpose). Everything else is 1, because second copies of dramatic cards either do nothing (they hit a cap) or break the design.
-- A card that has reached its max is removed from that player's offers, not shown greyed. Vendetta removes itself when you win a round and may be offered again.
-
-**Scariest stacks and how they are contained**
-
-| Stack | Why it is scary | Containment |
+# CARDS: the 30-card set, as implemented (RawAlanBattleRoyale)
+
+Status: **implemented and playable** (`src/cards.js`, 30 cards: 11 common, 12 uncommon, 7 rare). Ten cards shipped in version 1; the other twenty were added afterwards
+(fifteen of them were designed in the first version of this document, five are new designs). Numbers here are the numbers in the code; they are starting values
+for playtesting, not final. The rules every card inherits (self-damage, open arena, out of bounds, knockback, caps) are in "Rules and caps" at the end.
+
+A card is ONE plain object in `src/cards.js`: `id, name, rarity, maxStacks, icon, description, lines` (the green / rust stat lines on the card), `mods` (stat modifiers),
+`hooks` (code the simulation calls at the right moment), optional `dynamic` (modifiers that follow a state) and optional `tags` / `preview`. How to add one: `docs/ADDING-CONTENT.md`.
+
+## 1. What the research says (and what we took from it)
+
+Sources actually read for this extension are listed at the end of this section. Several are community guides or mod notes, so each finding is stated with its strength.
+
+1. **Enablers, payoffs and bridges.** Slay the Spire players describe good decks as a foundation of solid picks that is then steered into a synergy, and say a deck that follows no archetype tends to
+   "end up dead in the water" (strength: forum opinion). Enter the Gungeon has items that exist mainly to enable others (a passive "only useful as a part of synergies"), pairs where one item changes how
+   the other behaves, one gun with several valid partners, and a "universal enabler" that switches all synergies on (strength: fan lists). ROUNDS players call Scavenger the best single card
+   "because it combos with practically everything" (strength: one 2023 thread). **We took:** every archetype has enablers (they change what a bullet or the body does) and payoffs (they reward the result),
+   and a few bridge cards that feed two archetypes (Bricklayer: parry and bounce; Pepperpot: spray and explosive; Kickback: mobility and explosive; Salamander: mobility and map hazards).
+2. **Stand-alone value first.** Because a player only gets four picks (first to 5 rounds), a card that does nothing without its partner is a dead pick. In the Slay the Spire advice the early picks are the
+   foundation; in the Brotato balance guide a niche item may skip its downside because needing a build is the cost (earlier research, kept). **We took:** every card is useful alone (a stat change or a clear effect)
+   and has a visible trade-off; the combo is a bonus.
+3. **Not everything stacks: override and negative interactions.** The Isaac wiki records every item pair as positive, neutral, negative or override (one item's effect replaces the other's). **We took:** every card section below
+   lists anti-synergies as well as combos (Anchor against Kickback's target, Cornered against Tithe's healing, Vendetta against Late Bloomer, Gravedigger needs shoves).
+4. **Non-linear combos beat plain stat stacking.** Isaac's Tear Detonator with Ipecac, Gungeon's gun + item transformations and ROUNDS' Spray + Mayhem + Explosive Bullets are fun because the result is a different play pattern,
+   not +20%. **We took:** most new cards change a verb (hang on walls, build stone, lob shells, set off barrels, knock people out) instead of adding a percentage.
+5. **Proc chains need limits.** Risk of Rain 2 gives every effect a proc coefficient (a chain lightning at 0.2 can only trigger other on-hit items at 20%, some effects at 0) and the ProcSolver mod caps chain length at 3 for
+   skills and 1 for items, because chains cascade (strength: community mod notes; the rationale is inferred). Isaac's runaway cases come from items that multiply projectiles that inherit the parent's damage (earlier research).
+   **We took:** anything a card spawns is "generation 1" and cannot spawn or split again (Porcupine shards, Prism children), a reflected bullet cannot be reflected again, a barrel chain shares one trigger-pull
+   damage cap (Demo Permit), on-kill / on-round-end effects (Vendetta, Parting Gift) do not trigger other cards, and healing is capped per round.
+6. **Every strong archetype needs an answer.** (Design judgement, supported by the Slay the Spire note that archetypes conflict inside a pool, and by ROUNDS' reputation for unanswerable stacks.) **We took:** each archetype in section 2
+   names the cards that beat it.
+7. **Avoid the unfun in a 1v1.** No stuns, slows, blinds, invisibility, unavoidable damage, one-shot kills, or effects that punish the opponent's quiz or pick (ROUNDS has several of those; we skip them). Hard limits come from the caps.
+
+**Names.** All 30 names were compared with the 64-name ROUNDS card list (Abyssal Countdown ... Wind Up, fetched from magicgameworld.com) and with famous item names of the other games. There is an automated check
+in `tests/cards.test.mjs` against the ROUNDS list. Closest neighbours of the older cards: Needle Rounds (ROUNDS has Fastball, Quick Shot), Porcupine (nothing similar), Bricklayer (ROUNDS has Saw and a few block cards, none builds stone), Sleight of Hand (ROUNDS has Tactical Reload and Scavenger).
+
+**Sources used.**
+- ROUNDS card list, 64 cards: https://www.magicgameworld.com/?p=126089 and bullet cards: https://www.magicgameworld.com/?p=126115
+- ROUNDS combo remarks (Steam thread, search snippet): https://steamcommunity.com/app/2379780/discussions/0/4365754575402380019
+- Risk of Rain 2 proc chains: https://rogueranker.com/risk-of-rain-2-ukulele/ and https://thunderstore.io/c/riskofrain2/p/RiskOfBrainrot/ProcSolver/
+- Slay the Spire archetypes and deck advice: https://slaythespire.gg/guides/strategy and https://steamcommunity.com/app/646570/discussions/0/3377008022018975642
+- Enter the Gungeon synergies: https://www.fandomspot.com/enter-the-gungeon-best-synergies/
+- Binding of Isaac interactions: https://bindingofisaacrebirth.wiki.gg/wiki/Template:Interaction , https://bindingofisaacrebirth.wiki.gg/wiki/Tear_Detonator , https://bindingofisaacrebirth.wiki.gg/wiki/Habit
+- Earlier research kept: Brotato balance guide https://brotato.wiki.spellsandguns.com/Modding/Balance_Guide , Isaac damage stacking https://bindingofisaacrebirth.wiki.gg/wiki/Damage , Gungeon developer Q&A https://www.gamedeveloper.com/design/q-a-the-guns-and-dungeons-of-i-enter-the-gungeon-i- , Vampire Survivors evolutions https://en.wikipedia.org/wiki/Vampire_Survivors , ROUNDS review https://www.gfinityesports.com/article/i-hate-1v1-competitive-games-but-rounds-is-the-unhinged-exception
+
+Research limits, stated plainly: there is little first-party design writing for these games; the Isaac and Gungeon pages are the most solid, the ROUNDS and Steam material is anecdotal. The numbers and caps are our own design judgement.
+
+## 2. Archetype map, bridges and counters
+
+| Archetype | Enablers and members | Payoffs | Bridges | Answered by |
+|---|---|---|---|---|
+| **Spray / volume** | Hair Trigger, Pepperpot, Pinball | Tithe (many small heals), Prism Shot | Pepperpot (to explosive) | Return Policy (reflects the spam), Porcupine (rings punish close spray), a well-timed Tight Guard |
+| **Bounce** | Pinball, Prism Shot, Bricklayer (slabs are bounce surfaces), Trebuchet (arcs land and bounce) | bank shots, Powder Keg (bombs that bounce) | Bricklayer (parry to bounce) | blocking (every bounced bullet is destroyed by the shield), Anchor / Thick Skin to survive self-hits, open maps with no surfaces |
+| **Explosive / area** | Powder Keg, Demo Permit, Trebuchet, Parting Gift, Last Call, Pepperpot | blasts ignore blocks and evasion | Kickback (rocket jumps), Pepperpot | Anchor (no shove), Thick Skin, Needle Rounds (snipe the slow bomber), staying off barrels |
+| **Parry** | Tight Guard, Return Policy, Sleight of Hand, Bricklayer | reflected bullets, refilled magazine, slabs | Bricklayer | explosions (a shield does not stop them), Needle Rounds (3000 u/s vs a 0.15 s window), waiting out the 4-6 s cooldown, Late Bloomer |
+| **Mobility / ring-out** | Featherweight, Cloudstep, Limpet, Scramble, Salamander, Kickback, Wrecking Ball | Gravedigger (a ring-out pays), the open arena itself | Salamander (hazards), Kickback | Anchor (the hard counter to every shove), Cloudstep and Bricklayer slabs (recover), Limpet (cling to the wall you are thrown at) |
+| **Tank / attrition** | Thick Skin, Anchor, Tithe, Porcupine | Late Bloomer, Gravedigger (heals) | Porcupine (tank that bites) | Late Bloomer and sudden death (long rounds), burst (Paper Dragon, Last Call), blasts (Powder Keg, Demo Permit), Needle Rounds |
+| **Glass cannon** | Paper Dragon, Vendetta, Cornered, Hair Trigger | burst, Last Call | Cornered (low HP is its trigger) | Porcupine, Pepperpot, Parting Gift, simply being hit first (60 HP is three hits) |
+| **Long arc / sniper** | Needle Rounds (flat), Trebuchet (lob), Limpet (hang on a wall), Last Call, Late Bloomer | the first hit | Limpet (mobility to sniper) | Featherweight and Cloudstep (evasion), Tight Guard, Pepperpot at close range, Salamander lanes |
+
+**Cross-archetype bridges** worth knowing: Kickback + Powder Keg (rocket jumps), Bricklayer + Pinball (a slab you control to bank shots off), Limpet + Needle Rounds (a hanging sniper),
+Salamander + Wrecking Ball (shove them into the saw, you ignore it), Tithe + Porcupine (every shard that lands heals you), Demo Permit + Trebuchet (lob shells onto barrels behind cover).
+
+## 3. The 30 cards
+
+Max = how many copies a player may take (the offer never shows a maxed card). "Gen" = generation: bullets spawned by cards cannot spawn more.
+
+| # | Card | Rarity | Headline effect | Archetype | Max |
+|---|---|---|---|---|---|
+| 1 | Hair Trigger | common | fire rate x2, ammo x2, damage -40%, +4 deg spread | spray | 2 |
+| 2 | Pinball | common | +4 bounces, +30% damage per bounce, -25% damage, bounced bullets hurt you | bounce | 2 |
+| 3 | Thick Skin | common | max HP x2, size +30%, move speed -25% | tank | 2 |
+| 4 | Tight Guard | common | block cooldown -75%, window -50% | parry | 1 |
+| 5 | Scramble | common | after any hit: +100% speed, +50% fire rate (2.5 s); -20% max HP | mobility | 1 |
+| 6 | Needle Rounds | common | bullet speed x2, no drop, +50% damage, -3 ammo | sniper | 1 |
+| 7 | Cloudstep | common | +2 air jumps, -20% speed, -20% HP | mobility | 1 |
+| 8 | Paper Dragon | common | damage x2, max HP -40%, -2 ammo | glass | 1 |
+| 9 | Anchor | common | knockback taken -80% (hits, blasts, hazards), +30% HP, -15% speed and jump | tank / counter | 1 |
+| 10 | Limpet | common | hang still on walls; clinging: +40% damage, -50% knockback; -15% HP | mobility / sniper | 1 |
+| 11 | Salamander | common | hazards deal no damage, touching one: +50% fire rate +30% speed (3 s); -15% HP | mobility / counter | 1 |
+| 12 | Featherweight | uncommon | size -40%, speed +40%, jump +15%, HP -40%, knocked back x2 | mobility | 1 |
+| 13 | Powder Keg | uncommon | bullets explode (blast hurts you too), +25% damage, -20% bullet speed, +25% reload | explosive | 1 |
+| 14 | Pepperpot | uncommon | 5 pellets per shot at 8 damage, short range | spray / explosive | 1 |
+| 15 | Tithe | uncommon | heal 100% of damage dealt (70 per round), damage -45% | tank | 1 |
+| 16 | Wrecking Ball | uncommon | bullets 3x size, 3x knockback, speed -25%, fire rate -40% | ring-out | 1 |
+| 17 | Trebuchet | uncommon | shells arc 3x as steeply, +60% damage, +50% size, -3 ammo; aim preview | explosive / sniper | 1 |
+| 18 | Kickback | uncommon | each shot pushes you back (380 u/s), your hits shove x2 | mobility / ring-out | 1 |
+| 19 | Sleight of Hand | uncommon | a blocked bullet refills the magazine; +50% reload time | parry | 1 |
+| 20 | Porcupine | uncommon | when hit: ring of 10 thorn shards (10 damage each, 1 s cooldown); -20% speed | tank / counter | 1 |
+| 21 | Cornered | uncommon | at 40% HP or less: +60% damage, +50% fire rate, +30% speed | glass / tank | 1 |
+| 22 | Demo Permit | uncommon | barrels you shoot blast +40% wider and spare you; crates and barrels take 2.5x; -15% damage | explosive | 2 |
+| 23 | Late Bloomer | uncommon | -20% damage at the start, +8% per 6 s of the round (8 steps) | tank / counter | 2 |
+| 24 | Prism Shot | rare | +2 bounces, first bounce splits the bullet in three | bounce | 1 |
+| 25 | Return Policy | rare | blocked bullets return x1.5 speed and damage; +50% block cooldown | parry | 1 |
+| 26 | Bricklayer | rare | a block conjures a stone slab (platform in the air, wall on the ground, 5 s); -0.1 s window | parry / bounce | 1 |
+| 27 | Parting Gift | rare | when you die: 0.5 s fuse, then a 40 damage blast; a kill = draw | explosive / counter | 1 |
+| 28 | Vendetta | rare | +50% damage, +20% fire rate, +2 ammo, -25% HP; gone when you win a round | glass | 1 |
+| 29 | Last Call | rare | the last bullet of a magazine: 2x damage (40 cap), 2.5x size, 1.3x speed, 2.5x knockback; +25% reload | sniper / explosive | 1 |
+| 30 | Gravedigger | rare | ring-outs you cause cost them +12 and heal you 25; +50% knockback; -15% damage | ring-out | 1 |
+
+Duplicates: only **Hair Trigger, Pinball, Thick Skin, Demo Permit and Late Bloomer** may be taken twice (their second copies are listed below); everything else is 1, because a second copy of a dramatic card either hits a cap or breaks the design.
+
+## 4. Card by card
+
+Format: effect with final numbers, hooks / machinery, combos (at least two), counters (at least one), risks, stacks. Percentages on one stat add (see "Rules and caps"). "Burst cap" = fire rate x damage x pellets <= 130.
+
+### Common
+
+**1. Hair Trigger** - *Spray twice as many, half as strong.* Fire rate x2 (6/s), ammo x2 (10), damage x0.6 (12), +4 degrees of random spread. Stats only. Combos: Pepperpot (the burst cap trims it), Tithe (many small heals, capped), Sleight of Hand (a 10-round clip refilled by one block). Counters: Return Policy, Porcupine. Risks: bullet count (live-bullet cap 60). Stacks: 2 (fire rate 8/s cap, damage 8 floor).
+
+**2. Pinball** - *Bullets bounce four times and hit harder every time, you included.* +4 bounces, damage x0.75 (15), lifetime +1 s; every bounce adds +30% of the launch damage (+60% with two). Hook `onShoot` (pale bullets), `onBounce`. Combos: Prism Shot (more bounces for the children), Bricklayer (a slab is a surface), Trebuchet (steep arcs land and bounce). Counters: any block (bounced bullets are destroyed), Anchor. Risks: self-hits (owner immunity ends at the first bounce). Stacks: 2 (6-bounce cap).
+
+**3. Thick Skin** - *Twice the health, a bigger target, and a long fall.* Max HP x2 (200), size +30%, speed -25%. A fall costs 60 HP. Combos: Tithe, Porcupine, Late Bloomer. Counters: Powder Keg and Demo Permit (big target), Wrecking Ball (a big out-of-bounds bill). Stacks: 2 (HP cap 250, size cap 1.6). Sudden death bleeds a fraction of MAX HP, so the extra HP is a buffer, not a win condition.
+
+**4. Tight Guard** - *Block whenever you like, but only for a heartbeat.* Block cooldown x0.25 (1 s), window x0.5 (0.15 s). Stats only. Combos: Return Policy (the parry build), Sleight of Hand (refill every parry), Bricklayer. Counters: explosions, Needle Rounds.
+
+**5. Scramble** - *Getting hit lights a fire under you.* Max HP x0.8; after any damage +100% speed and +50% fire rate for 2.5 s (refreshes, does not stack). Hook `onDamaged` -> timed modifier (a buff ring and the card icon show). Combos: Featherweight, Cloudstep, Salamander (a hazard hit lights both). Counters: Powder Keg (the blast hits while it runs), Pepperpot.
+
+**6. Needle Rounds** *(new)* - *Flat, blindingly fast bullets. Only two in the clip.* Bullet speed x2 (3000 u/s), bullet drop x0 (it is the answer to the arc), damage x1.5 (30), size x0.6, ammo -3 (2). Hook `onShoot` (steel bullets). Combos: Limpet (a hanging sniper), Last Call (the second shot is a 40-damage cannonball), Late Bloomer. Counters: Featherweight and Cloudstep (they dodge a read, not a 3000 u/s bullet but a small body), Tight Guard (a 0.15 s window still catches it if timed). Risks: 4 hits to kill; miss twice and you wait 2 s.
+
+**7. Cloudstep** *(new)* - *Jump twice more in mid-air. The ground feels heavy.* +2 air jumps (each at 85% of the jump velocity), speed x0.8, HP x0.8. Machinery: stat `airJumps`, state `airLeft`, refilled on the ground and on a wall (so wall climbing still works). Combos: Featherweight, Limpet (a wall refills the jumps), Trebuchet (lob from height). Counters: Pepperpot and Powder Keg (area damage does not care that you float), Gravedigger. The air-jump ring under the feet shows each jump. Re-evaluated against wall climbing: kept, because the real gain is recovering after a knock-off.
+
+**8. Paper Dragon** *(new)* - *Hits like a dragon. Breaks like paper.* Damage x2 (40), HP x0.6 (60), ammo -2 (3). Stats only. Combos: Cornered (low HP is its trigger), Vendetta, Hair Trigger (the burst cap trims it to 130/s). Counters: Porcupine, Pepperpot, any first hit. Risks: a mutual kill (draw) is likely and fine.
+
+**9. Anchor** *(new, reworked)* - *Planted. Hits, blasts and hazards barely push you.* Knockback taken x0.2, HP x1.3, speed x0.85, jump x0.85. Machinery: hazard shoves now scale with `knockbackTaken` too (capped at 700). Combos: Thick Skin, Cloudstep (a firm landing), Salamander. Counters: Needle Rounds and Trebuchet (the slow body is a target). It is the hard counter to Wrecking Ball, Kickback, Gravedigger and every shove; against nothing else it is a mild tank.
+
+**10. Limpet** *(new design)* - *Stick to a wall and you stop sliding. Clinging makes you mean.* HP x0.85, wall glide x0 (you hang still while gripping); while clinging (touching a wall in the air) damage x1.4 and knockback taken x0.5. `dynamic` modifier. Combos: Needle Rounds, Last Call (a perched sniper), Cloudstep. Counters: Powder Keg and Demo Permit (area hits the perch), Wrecking Ball (a ring-out from a perch), Pepperpot. The hang is part of the predicted step (stat `wallGlide` is in the movement state). Uses our wall grip, which the original 25 cards could not.
+
+**11. Salamander** *(new design)* - *Spikes, saws and embers cannot hurt you. Touching them lights you up.* Hazard damage x0 (you are still shoved), HP x0.85; on a hazard hit +50% fire rate and +30% speed for 3 s. Hook `onHazard`. Combos: Scramble, Wrecking Ball (you ignore the saw they are shoved into), Kickback. Counters: plain gunfire and blasts (the card does nothing against them), and maps with few hazards (the plaza). Risk: on hazard-heavy maps it is a free 15 HP per touch you would not take.
+
+### Uncommon
+
+**12. Featherweight** - *A speck that darts around. Blown away by anything.* Size x0.6, speed x1.4, jump x1.15, HP x0.6, knockback taken x2. Hazards shove you at most 700 u/s. Combos: Scramble, Cloudstep, Kickback. Counters: Wrecking Ball, Powder Keg, Pepperpot (a small body is still hit by area), Gravedigger.
+
+**13. Powder Keg** - *Every bullet is a bomb. Don't stand too close.* Damage x1.25, bullet speed x0.8 (1200), reload x1.25. Hook `onShoot` (explosive, ember), `onBulletHit` (blast radius 96, children 60%). The blast hurts you too. Combos: Pinball, Kickback (rocket jumps), Demo Permit. Counters: Anchor, Thick Skin, blocking the bullet before it detonates (a block destroys it without a blast), Needle Rounds.
+
+**14. Pepperpot** - *Five pellets per shot. Get close.* +4 pellets (5) in a +-14 degree fan, damage x0.4 (8), lifetime 0.36 s (range about 540). Stats. Combos: Hair Trigger, Powder Keg, Prism Shot. Counters: Return Policy (five reflected pellets), Porcupine, distance.
+
+**15. Tithe** *(reworked)* - *Every hit heals you for what it takes.* Damage x0.55 (11). Hook `onDealt`: heal 100% of what was really dealt (after the caps; bullets, blasts, Demo Permit blasts), 70 HP per round at most, no overheal. Combos: Thick Skin, Porcupine, Gravedigger. Counters: Late Bloomer and sudden death (long rounds), Paper Dragon (burst), blocking (a blocked bullet heals nothing). Anti-synergy: Cornered (a heal switches the bonus off). New hook `onDealt` replaces the old guess from `onBulletHit`.
+
+**16. Wrecking Ball** *(reworked)* - *Huge, slow bullets that launch people off the map.* Size x3 (36 units), knockback x3 (a hit pushes 700 u/s at the cap), bullet speed x0.75 (1125), fire rate x0.6. The old -45% speed would have made the new arcs a mortar; -25% keeps it shootable. Combos: Kickback, Gravedigger, Salamander. Counters: Anchor, Cloudstep and Bricklayer (recover), Limpet.
+
+**17. Trebuchet** *(reworked)* - *Lob heavy shells high over cover. Your aim shows the arc.* Bullet drop x3 (1500), bullet speed x1.25, damage x1.6 (32), size x1.5, ammo -3 (2). The first design assumed drop 80 and "gravity x6"; with drop 500 a x3 shell makes steep, high lobs (a 45 degree shell rises about 600 u) that fall onto cover. Your own aim draws a dotted arc (card flag `preview`; the arc is cosmetic and only for you). Bullets may fly 900 units above the screen and come back. Combos: Demo Permit, Powder Keg, Limpet. Counters: Tight Guard, Featherweight (a lob is slow to arrive), Anchor.
+
+**18. Kickback** *(reworked)* - *Every shot shoves you backwards. Every hit shoves them harder.* Recoil +380 u/s opposite to the aim (vertical recoil is 80%: firing down is a rocket jump), knockback dealt x2. Combos: Powder Keg, Wrecking Ball, Cloudstep. Counters: Anchor (their hits do not shove you, your recoil still works), a ledge: it is a self-ring-out card. Prediction: your own recoil is a host-side impulse, so it arrives as a small correction (measured: mean 1.6 units, largest fade 3.6 per frame on a 100 ms round trip).
+
+**19. Sleight of Hand** *(reworked)* - *Block a bullet and your gun is full again.* Reload x1.5. Hook `onBlock`: the first bullet a block absorbs refills the magazine and cancels a reload (once per block, counted by `blockSeq`). Combos: Tight Guard, Return Policy, Hair Trigger. Counters: explosions and holding fire (a block with nothing to absorb gives nothing).
+
+**20. Porcupine** *(reworked)* - *Hit me and I hit back, ten ways.* Speed x0.8. Hook `onDamaged`: bullet or blast damage from the opponent (not hazards, not self, not a lethal hit), 1 s cooldown: a ring of 10 thorn shards, 10 damage, 900 u/s, 0.4 s, no gravity, generation 1, one shot id (60 per target cap). Combos: Thick Skin, Tithe, Return Policy. Counters: distance (range 360), Needle Rounds, Tight Guard timing; it hurts Hair Trigger and Pepperpot users most.
+
+**21. Cornered** *(reworked)* - *The closer to death, the nastier you get.* `dynamic`: at 40% HP or less damage x1.6, fire rate x1.5, speed x1.3 (the burst cap trims it). Re-evaluated every tick, so a heal switches it off. Combos: Paper Dragon, Scramble, Thick Skin (the threshold is 80 HP). Counters: Tithe (a heal removes it, so they fight each other), patience.
+
+**22. Demo Permit** *(new design)* - *Barrels you shoot blast wider and spare you. Crates crumble.* Damage x0.85; stat `blockDamage` x2.5 (crates, barrels and slabs break 2.5x faster). Hook `onBarrel`: a barrel you destroyed blasts +40% wider (+80% with two) and spares you, and the blast is YOUR attack: the 40 per hit and 60 per trigger pull caps apply (a chain of barrels never does more than 60 to one player), Tithe and Gravedigger see it. Every map has barrels. Combos: Trebuchet, Powder Keg (explosive bullets set barrels off), Pepperpot. Counters: Anchor, Thick Skin, simply standing away from barrels; it is dead on a map without them. Stacks: 2.
+
+**23. Late Bloomer** *(new design)* - *Weak at first. Every six seconds of the round you hit harder.* Damage x0.8 at the start; `dynamic`: +8% per 6 s of live round time, 8 steps (+64% at 48 s: sudden death), break-even after about 15 s; a pulse and the card icon show at every step. Combos: Thick Skin, Porcupine, Sleight of Hand (stall, then win), Needle Rounds. Counters: Paper Dragon and Hair Trigger (kill it early), blasts; anti-synergy: Vendetta. It is the counter to turtles and healers, and weak in a fast round. Stacks: 2 (two copies: -40% at the start, +128% at the end, the 40 per-hit cap holds).
+
+### Rare
+
+**24. Prism Shot** - *A bullet's first bounce splits it into three.* +2 bounces; `onBounce`: the first bounce of an original bullet spawns two children at +-25 degrees (70% damage, generation 1). Combos: Pinball, Powder Keg, Bricklayer. Counters: blocking, Anchor. Risks: self-hits; children cannot split.
+
+**25. Return Policy** - *Blocked bullets come back, aimed at whoever fired them, faster and harder.* Block cooldown x1.5. `onBlock`: reflect (x1.5 speed and damage, cannot be reflected again, up to 5 per block). Combos: Tight Guard, Sleight of Hand, Pepperpot's victims. Counters: explosions are not reflected, holding fire, Needle Rounds.
+
+**26. Bricklayer** *(reworked, machinery)* - *A good block builds you stone: a platform in the air, a wall on the ground.* Block window -0.1 s. `onBlock` (once per block): in the air a 128 x 16 slab under your feet, on the ground a 16 x 72 wall in front of you (or behind if blocked); 60 HP, 5 s, one per owner, solid for both players, shootable, a bounce surface. A lifeline over the pit and cover on the ground. Combos: Pinball, Prism Shot, Tight Guard, Cloudstep. Counters: Powder Keg and Demo Permit (60 HP), Wrecking Ball; the opponent can use the slab too. Sent in snapshots (`sl`).
+
+**27. Parting Gift** *(reworked, machinery)* - *If you go down, they do not walk away clean.* Hooks `onDamaged` (lethal) -> `schedule`: a 0.5 s fuse that holds the round open (a blinking radius ring and the card name show), then a flat 40-damage blast (radius 112, the per-hit cap) with no falloff. If it kills the winner both are dead: the round becomes a draw (no point, no quiz, no card). The winner can simply walk out of the radius in 0.5 s. The first design said 60 damage; the 40 per-hit cap makes it 40. Combos: Thick Skin, Cornered, Powder Keg. Counters: distance, Featherweight (small and fast), Cloudstep.
+
+**28. Vendetta** *(reworked, machinery)* - *A surge of power that lasts until you win a round.* Damage x1.5 (30), ammo +2 (7), fire rate x1.2, HP x0.75; hook `onRoundEnd` (you won) -> `removeCard()`: the card is spent ("VENDETTA SPENT"), stats return to base, it can be offered again. It uses the new round-end hook, so it also ends on an environment win. Combos: Paper Dragon, Cornered, Hair Trigger. Counters: Porcupine; anti-synergy: Late Bloomer (it wants long rounds, Vendetta wants quick ones).
+
+**29. Last Call** - *Your last bullet is a cannonball.* Reload x1.25. `onShoot` when the shot empties the magazine: damage x2 (40 cap), size x2.5, speed x1.3, knockback x2.5 (gold bullet). Combos: Needle Rounds (two-round clip: every second shot), Powder Keg (the big shot is a big blast), Wrecking Ball. Counters: the tell (a gold bullet is easy to see and block), Anchor.
+
+**30. Gravedigger** *(new design)* - *Whoever you knock out of the arena pays extra, and you feel better for it.* Knockback x1.5, damage x0.85. Hook `onRingOut` (a player thrown out within 3 s of YOUR hit): the victim takes +12 (through the caps) on top of the 30% fall, you heal 25. Combos: Wrecking Ball, Kickback, Pepperpot (a point-blank shove). Counters: Anchor, Cloudstep, Bricklayer slabs; no ring-outs on a map where nobody falls. The 2 s out-of-bounds immunity bounds it to one ring-out per 2 s.
+
+## 5. The nastiest stacks and how they are contained
+
+| Stack | Why it is scary | Containment (all tested in `tests/cards.test.mjs` unless noted) |
 |---|---|---|
-| Paper Dragon + Hair Trigger + Cornered or Vendetta | Huge burst on a 60 HP body | Burst cap 130/s, hit cap 40, magazine budget 240; the owner still dies in 3 hits and every extreme stat is clamped before it is applied |
-| Pinball x2 + Prism Shot + Powder Keg | Bouncing, splitting bombs that grow per bounce | Bounces cap 6, children cannot split and explode at 60%, one explosion per bullet, per-shot cap 60 per target **including you**, live-bullet cap 60, block destroys bombs; it only works near platforms and hurts the owner first |
-| Wrecking Ball + Kickback (+ Powder Keg) | Knock the enemy out of the screen every time | Knockback cap 3x and 700 /s, 2 s out-of-bounds immunity (at most 15 damage/s from this), Anchor and Cloudstep as counters, and Kickback shoves you out too |
-| Featherweight + Cloudstep + Scramble | Looks untouchable (size 0.6, 3 jumps, +100% speed) | HP floor 60 (3 hits), no slows or stuns needed to catch it, Pepperpot and Powder Keg punish it, Wrecking Ball sends it out of bounds, shoves x2 |
-| Tight Guard + Return Policy + Sleight of Hand | Parry engine: reflect and refill every 3 s | A block needs an absorbed bullet to pay off, the 0.15 s window, reflected bullets cannot be reflected again, per-shot cap 60, and the opponent can simply stop shooting |
-| Tithe + Thick Skin x2 + Porcupine | Stalls the round | Heal cap 70/round, damage floor 8, round timer (open question) |
+| Paper Dragon + Hair Trigger + Cornered + Vendetta | huge burst on a 60 HP body | burst cap 130/s, per-hit cap 40, magazine budget 240, the owner still dies in 3 hits |
+| Kickback + Wrecking Ball + Gravedigger | knock them out every time, heal for it | hit push <= 700 u/s, no body faster than 1100 u/s, 2 s out-of-bounds immunity (at most one ring-out per 2 s), Anchor, Kickback shoves YOU out too |
+| Demo Permit x2 + two barrels | a barrel chain could one-shot | the blast is the owner's attack: 40 per blast, 60 per chain per target |
+| Porcupine + Hair Trigger + Pepperpot (as the victim) | rings of shards | generation 1, one shot id (60 cap), 1 s cooldown, live-bullet cap 60 |
+| Tithe + Thick Skin x2 | never dies | heal cap 70 per round, damage floor 8, Late Bloomer / sudden death (a fraction of max HP) |
+| Parting Gift + Powder Keg | a kill from beyond | one 40 damage blast, the winner can walk away, a kill is a draw |
+| Limpet + Needle Rounds + Last Call | an unreachable sniper | the last needle is capped at 40, the perch is hit by blasts, Tight Guard |
+| Tight Guard + Return Policy + Sleight of Hand + Bricklayer | parry engine | a block needs an absorbed bullet, 0.15 s window, reflected bullets cannot be reflected, explosions pass through, the opponent can stop shooting |
 
-**Pre-ship checks for each card (to run in a headless bot test)**
-- Time to kill from full HP with the card: report the fastest and the median.
-- Sustained dps against the 27.3 dps baseline; flag any card or pair above 55 dps, and any pair that reaches a cap.
-- All 2-card combinations among the pool, looking for ones that beat the baseline by more than about 2x in win rate; plus the six stacks above.
-- Self-damage rate per card (damage dealt to the owner per round) for Pinball, Prism Shot, Powder Keg, Kickback, Trebuchet.
+## 6. Rules and caps (unchanged)
 
-## Open design questions for the project owner
+- **Stacking:** `final = clamp((base + sum of add) * (1 + sum of (mul - 1)))`, percentages on one stat add. Timed buffs refresh (one entry per card), `dynamic` modifiers follow a state.
+- **Stat limits** (`config.statLimits`): damage 8-40, fire rate 1-8, ammo 1-12, reload 0.8-4 s, bullet speed 750-3750, bullet size 3-18, bullet drop 0-4000, lifetime 0.3-5 s, pellets 1-6, spread 0-20 deg, bounces 0-6, knockback 65-780, knockback taken 0.2-2.5, recoil 0-600, max HP 60-250, move speed 180-600, jump 462-924, size 0.6-1.6, block cooldown 1-10 s, window 0.15-0.8 s, **air jumps 0-3, wall glide 0-1, hazard taken 0-1, block damage 1-4**.
+- **Derived caps:** burst `fireRate x damage x pellets <= 130`, magazine budget `ammo x pellets x damage <= 240`, per hit 40, per trigger pull per target 60, healing 70 per round, live bullets per player 60, a hit or blast pushes at most 700 u/s, **no body ever moves faster than 1100 u/s** (`move.maxSpeed`).
+- **Self-damage is on:** a bullet cannot hurt its owner for 0.15 s or until its first bounce; explosions hurt everyone in range (unless a card spares its owner).
+- **Out of bounds:** 30% of max HP, thrown back with 1.5 s of immunity (the top is free). A fall within 3 s of a hit counts as that player's ring-out (`onRingOut`).
+- **Sudden death:** after 45 s both players bleed 2% of their max HP per second.
+- **Hard bans:** no stun, slow, blind, invisibility, silence, unavoidable damage, one-shot kill, no effect that punishes the opponent's quiz or pick.
 
-1. **Round timer / sudden death.** Tank and sustain cards (Thick Skin x2, Tithe, Porcupine) can make a round long. Proposal: after 45 s both players lose 2 HP/s, with a visible warning. Do you want a timer, and at what length?
-2. **Is the cap level right?** Caps keep matches playable (no 2-hit kills, burst limited to 2.2x baseline), but they also stop the most "unhinged" ROUNDS-style stacks. Should the caps be looser (more chaos) or tighter (more skill)?
-3. **Catch-up beyond the pick.** Should trailing players also get a mild one-round bonus (like TowerFall's shield) on top of the pick? I recommend not, until playtests show the pick is not enough. Vendetta is already a card-based catch-up tool.
-4. **Parting Gift and draws.** A draw gives no point and no card, so a trailing player can use Parting Gift to deny a match point. I left it in, with the 0.5 s escape window. OK, or should a draw still count in some way?
-5. **Vendetta disappears when you win.** Intended as a comeback tool, not a snowball. OK, or should it be permanent?
+**Offer logic.** Five distinct cards per pick, drawn slot by slot with the rarity weights 55 / 35 / 10 (45 / 35 / 20 when the picker is two rounds behind); with 11 / 12 / 7 cards a tier is picked first, then a card in it, so a rare is about 10% per slot. Not offered: a card the picker has maxed out, or a card that would change nothing for him (`cardUseful`: no stat changes after the limits and no hook). A wrong quiz answer removes 3 of the 5. A player makes at most **4 picks** (first to 5 rounds; draws give none), so a build is at most 4 cards; the match-end screen shows up to 5 with full descriptions.
+
+## 7. New machinery (generic, in `src/sim/`, no card names in the sim)
+
+- `dynamic: { key(p, state), mods(key) }` on a card + `updateDynamic` (each tick): modifiers that follow HP, a wall, the round clock; a buff event on increase. State: `p.dyn`.
+- Hooks: `onDealt` (damage you dealt, after the caps), `onHazard`, `onRingOut`, `onBarrel` (mutable `ctx.blast`: radius, damage, spare, owner), `onRoundEnd` (`ctx.won`), `onTimer`; `onDamaged` now carries `ctx.lethal`.
+- `ctx.removeCard()`, `ctx.schedule(delay, tag, data, {hold})` (plain-data timers in `state.timers`, hold = the round waits; the round becomes a draw if the winner dies in the window), `ctx.spawnSlab(opts)` (temporary solid blocks, `kind: 'slab'`, in snapshots as `sl`), `ctx.hurt(player, n)`, `ctx.fx(kind, data)` (a `cardFx` event for feedback).
+- Stats: `airJumps` (movement: air jump, `airLeft`), `wallGlide`, `hazardTaken`, `blockDamage`. Movement stats are in the movement state the client replays (`q` has airLeft, airJumps, wallGlide), so prediction stays exact (tested with Cloudstep, Limpet, Anchor, Featherweight, Thick Skin, Salamander, Scramble).
+- `explode(..., {spare, flat, by, shotId})`; hazard damage and shove scale with `hazardTaken` / `knockbackTaken`; `ring-out credit`; vertical recoil 80%; bullets may fly up to 900 units above the screen; new bullet styles steel / gold / thorn.
+- Presentation: buff ring + card icon, floating "+N" heal numbers, "RELOADED", fuse ring blink, slab dust, "RING OUT", "VENDETTA SPENT", thorn ring, air-jump ring; HUD build icons; `?scenario=cfx-slab|fuse|ring|trebuchet|permit|cloud|tithe|limpet` freezes each moment for pictures.
+
+## 8. Balance probe and known rough edges
+
+`node tests/cardstats.mjs 120` plays bot-vs-bot rounds with one card on one side (alternating). The bots are weak at long range and do not use cards on purpose, so read it as "does the card change the outcome", not "how good is it". Last run (120 rounds per card, baseline 50%; noise is about +-9 points):
+Thick Skin 70 (89 before sudden death was made a fraction of max HP), Anchor 63, Salamander 57, Porcupine 52, Gravedigger 49, Limpet 48, Late Bloomer 48, Pepperpot 48, Sleight of Hand 46, Bricklayer 45, Kickback 45, Trebuchet 43, Demo Permit 43, Tithe 43, Hair Trigger 43, Needle Rounds 41, Cornered 41, Vendetta 38, Parting Gift 37, Cloudstep 36, Prism Shot 35, Last Call 34, Paper Dragon 33, Pinball 33, Wrecking Ball 32, Scramble 30, Featherweight 28. No round under 3 s, no card without an effect.
+
+- The weak ones against bots (Featherweight, Scramble, Wrecking Ball, Paper Dragon, Last Call) are the cards that need a human to use them (dodging, ring-outs, burst timing); they are the first to look at in a human playtest.
+- Thick Skin is still the best pick against a bot (a bot rarely kills before sudden death). Counter-cards for tanks exist now (Late Bloomer, Paper Dragon, blasts); watch it in real play.
+- Kickback's recoil arrives from the host (about 1.6 units of correction on average); Gravedigger and Salamander depend on the map (ring-outs, hazards); Demo Permit needs barrels (all four maps have them).
+- Parting Gift and Vendetta create more draws and rematches of the same pressure; if draws feel bad, shorten the fuse or the radius.

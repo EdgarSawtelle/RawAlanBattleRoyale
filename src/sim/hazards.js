@@ -13,7 +13,7 @@ import { CONFIG } from '../config.js';
 import { getMap } from '../maps/index.js';
 import { platformPos } from './platforms.js';
 import { bodyOverlaps, circleHitsRect } from './collision.js';
-import { emit, damagePlayer } from './combat.js';
+import { emit, damagePlayer, fireHook } from './combat.js';
 
 const FACE = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
 
@@ -68,9 +68,12 @@ export function stepHazards(state, hazards) {
       const len = Math.hypot(n[0], n[1]) || 1;
       p.hazardCd = H.rehit;
       emit(state, 'hazardHit', { player: p.index, hazard: h.id, kind: h.type, x: p.x, y: p.y, nx: n[0] / len, ny: n[1] / len });
-      damagePlayer(state, p.index, cfg.damage, -1, null, { x: p.x, y: p.y });
+      const dmg = cfg.damage * p.stats.hazardTaken;                    // Salamander: 0
+      if (dmg > 0) damagePlayer(state, p.index, dmg, -1, null, { x: p.x, y: p.y });
+      fireHook(state, 'onHazard', p.index, { hazardKind: h.type });
       if (p.alive) {
-        p.vx = (n[0] / len) * cfg.shove; p.vy = (n[1] / len) * cfg.shove;
+        const shove = Math.min(CONFIG.caps.impulse, cfg.shove * p.stats.knockbackTaken);   // light bodies are thrown further, Anchor hardly moves
+        p.vx = (n[0] / len) * shove; p.vy = (n[1] / len) * shove;
         p.jumping = false; p.grounded = false; p.groundId = null; p.carry = CONFIG.move.carryTime;
       }
       break;                                                   // one hazard hit per tick

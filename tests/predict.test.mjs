@@ -13,6 +13,7 @@ import { registerMap } from '../src/maps/index.js';
 import { platformPos } from '../src/sim/platforms.js';
 import { getMap } from '../src/maps/index.js';
 import { applyImpulse } from '../src/sim/combat.js';
+import { setCards } from '../src/sim/world.js';
 import { killPlayer } from '../src/sim/combat.js';
 import { createBot, botInput } from '../src/practice/dummy-bot.js';
 import { STEP } from '../src/sim/world.js';
@@ -66,7 +67,7 @@ const hostOwn = (R) => R.host.state.players[1];
 const shown = (R) => R.rends[R.rends.length - 1];
 
 // A seeded "human": changes direction now and then, jumps now and then, taps jump on wall contact (climbing), rides the platform.
-function agent(seed) {
+function agent(seed, opt = {}) {
   let a = seed; const rnd = () => { a = (a * 1103515245 + 12345) & 0x7fffffff; return a / 0x7fffffff; };
   let dir = 1, left = 0, hold = 0;
   return (R) => () => {
@@ -81,8 +82,10 @@ function agent(seed) {
     let jumpPressed = false;
     const onWall = p.wallDir !== 0 && !p.grounded && p.wallRegrab <= 0;
     if (hold <= 0 && ((p.grounded && rnd() < 0.03) || (onWall && rnd() < 0.7) || (p.groundId && rnd() < 0.002))) { jumpPressed = true; hold = 6 + Math.floor(rnd() * 20); }
+    if (opt.air && hold <= 0 && !p.grounded && !onWall && rnd() < 0.04) { jumpPressed = true; hold = 6 + Math.floor(rnd() * 14); }            // taps in mid air (air jumps)
     const jump = hold > 0; if (hold > 0) hold--;
-    return { ...IDLE, left: dir < 0, right: dir > 0, jump, jumpPressed, aim: 0 };
+    const shoot = !!opt.shoot && rnd() < 0.5;
+    return { ...IDLE, left: dir < 0, right: dir > 0, jump, jumpPressed, shoot, aim: shoot ? (rnd() < 0.5 ? Math.PI / 2 : Math.PI) : 0 };
   };
 }
 
@@ -291,6 +294,32 @@ test('own muzzle flash: shown within a frame of the click at any round trip, onc
   // a click that cannot shoot (empty magazine) shows nothing
   R.host.state.players[1].ammo = 0; R.host.state.players[1].reloadLeft = 1.5; R.run(400); got.length = 0; click = true; R.run(300);
   ok(!got.some((g) => g.e.local), 'no flash while reloading');
+});
+
+test('movement cards: with Cloudstep, Limpet, Anchor, Featherweight, Thick Skin, Salamander or Scramble equipped the prediction stays exact (no growing correction) over a long run with wall jumps, air jumps and platform rides', () => {
+  CONFIG.net.predictOwnMovement = true;
+  const out = [];
+  for (const build of [['cloudstep'], ['limpet'], ['anchor', 'cloudstep'], ['featherweight'], ['thickskin'], ['salamander', 'scramble']]) {
+    const R = rig({ latency: 30 }); R.run(1200); setCards(R.host.state, 1, build); R.run(400);
+    R.input = agent(31, { air: true })(R);
+    R.run(40000);
+    const S = R.guest.predict.summary(), small = R.guest.predict.stats.errs.filter((e) => e < CONFIG.net.predictSnap), mean = small.reduce((s, e) => s + e, 0) / Math.max(1, small.length);
+    out.push(build.join('+') + ': mean ' + mean.toFixed(3) + ' p95 ' + S.p95Err.toFixed(2) + ' frame ' + S.maxFrameCorr.toFixed(2));
+    ok(mean < 0.4 && S.p95Err < 2.5, build.join('+') + ': mean correction ' + mean.toFixed(3) + ', p95 ' + S.p95Err.toFixed(2));
+    ok(S.maxFrameCorr < 6, build.join('+') + ': largest per-frame fade ' + S.maxFrameCorr.toFixed(2));
+    R.input = () => IDLE; hostOwn(R).x = 300; hostOwn(R).y = 485; hostOwn(R).vx = hostOwn(R).vy = 0; R.run(2500);
+    const h = hostOwn(R), s = shown(R); ok(Math.hypot(h.x - s.x, h.y - s.y) < 1, build.join('+') + ' ended ' + Math.hypot(h.x - s.x, h.y - s.y).toFixed(2) + ' from the host');
+  }
+  console.log('        ' + out.join(' | '));
+});
+
+test('Kickback (an impulse from your own shots): the correction stays small and bounded while firing on a 100 ms round trip', () => {
+  CONFIG.net.predictOwnMovement = true;
+  const R = rig({ latency: 50 }); R.run(1200); setCards(R.host.state, 1, ['kickback']); R.run(400);
+  R.input = agent(41, { shoot: true })(R); R.run(30000);
+  const S = R.guest.predict.summary(), small = R.guest.predict.stats.errs.filter((e) => e < CONFIG.net.predictSnap), mean = small.reduce((s, e) => s + e, 0) / Math.max(1, small.length);
+  console.log('        Kickback while firing: mean correction ' + mean.toFixed(2) + ', p95 ' + S.p95Err.toFixed(2) + ', largest per-frame fade ' + S.maxFrameCorr.toFixed(2) + ', snaps ' + S.snaps);
+  ok(mean < 3 && S.maxFrameCorr < 8, 'bounded: mean ' + mean.toFixed(2) + ', frame ' + S.maxFrameCorr.toFixed(2));
 });
 
 test('prediction off (flag): the client shows the host view only, as before', () => {

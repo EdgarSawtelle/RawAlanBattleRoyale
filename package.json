@@ -4,7 +4,7 @@
   "type": "module",
   "description": "RawAlanBattleRoyale: static files only (type module lets Node run the headless tests).",
   "scripts": {
-    "test": "node tests/sim.test.mjs && node tests/physics.test.mjs && node tests/match.test.mjs && node tests/net.test.mjs && node tests/predict.test.mjs && node tests/maps.test.mjs",
+    "test": "node tests/sim.test.mjs && node tests/physics.test.mjs && node tests/match.test.mjs && node tests/net.test.mjs && node tests/predict.test.mjs && node tests/maps.test.mjs && node tests/cards.test.mjs",
     "test:browser": "node tests/two-tab.mjs --local && node tests/two-tab.mjs && node tests/practice-browser.mjs",
     "soak": "node tests/soak.mjs 6 && node tests/soak.mjs 6 --chaos",
     "soak:maps": "node tests/soak.mjs 6 --chaos --map=ruined-city && node tests/soak.mjs 6 --chaos --map=waterfall-forest && node tests/soak.mjs 6 --chaos --map=old-plaza && node tests/soak.mjs 6 --chaos --map=abandoned-suburb"

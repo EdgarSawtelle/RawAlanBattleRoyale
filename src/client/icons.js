@@ -68,6 +68,103 @@ const ICONS = {
     FPOLY([[3, 3], [6, 0.5], [6, 5.5]], PALE); R(6, 2, 4, 2, PALE); P(10, 3, PALE); P(10, 4, TEAL); P(10, 5, TEAL);
     P(2, 7, TEAL); P(2, 6, TEAL);
   },
+  // ---- the 20 cards added after version 1 ----
+  needlerounds() {             // three thin needles, pointing right
+    for (const [y, x0] of [[2, 1], [6, 0], [9, 2]]) { R(x0, y, 7, 1, MID); R(x0 + 6, y, 3, 1, STEEL); R(x0 + 8, y, 1, 1, BONE); P(x0 + 9, y, PALE); R(x0, y - 1, 2, 1, DARK); R(x0, y + 1, 2, 1, DARK); }
+  },
+  cloudstep() {                // a cloud with a double chevron under it
+    DISC(4, 4, 2.6, BONE); DISC(7.5, 3.5, 3, BONE); DISC(9.5, 5, 2, BONE); R(2, 5, 9, 2, BONE); R(2, 6, 9, 1, STEEL);
+    LN(3, 9, 6, 7.5, TEAL); LN(9, 9, 6, 7.5, TEAL); LN(3, 11, 6, 9.5, DTEAL); LN(9, 11, 6, 9.5, DTEAL);
+  },
+  paperdragon() {              // a folded paper dragon head breathing a spark
+    FPOLY([[1, 8], [4, 2], [9, 4], [7, 8], [4, 11]], BONE);
+    FPOLY([[4, 2], [5.5, 6], [1, 8]], STEEL);
+    LN(1, 8, 4, 2, INK); LN(4, 2, 9, 4, INK); LN(9, 4, 7, 8, INK); LN(7, 8, 4, 11, INK); LN(4, 11, 1, 8, INK);
+    P(5, 5, INK); P(6, 5, RUST);
+    P(9, 6, AMB); P(10, 6, PALE); P(10, 5, RUST); P(10, 7, RUST); P(11, 6, AMB);
+  },
+  anchor() {                   // an anchor
+    RING(6, 2, 1.6, STEEL); R(5, 3, 2, 7, STEEL); R(5, 3, 1, 7, BONE); R(3, 4, 6, 1, STEEL);
+    LN(1, 7, 3, 10, STEEL); LN(3, 10, 6, 11, STEEL); LN(6, 11, 9, 10, STEEL); LN(9, 10, 11, 7, STEEL);
+    P(1, 6, MID); P(11, 6, MID); P(6, 0, INK);
+  },
+  limpet() {                   // a shell clinging to a wall
+    R(0, 0, 3, 12, MID); R(0, 0, 1, 12, STEEL); R(2, 0, 1, 12, DARK);
+    FPOLY([[3, 3], [7, 1.5], [11, 5], [11, 9], [3, 9]], BROWN);
+    LN(3, 9, 11, 9, INK); LN(11, 9, 11, 5, INK); LN(11, 5, 7, 1.5, INK); LN(7, 1.5, 3, 3, INK);
+    LN(5, 8, 6, 3, '#8f6a45'); LN(8, 8, 8, 3, '#8f6a45'); LN(10, 8, 10, 6, '#8f6a45');
+    R(3, 9, 8, 2, BONE);
+  },
+  salamander() {               // a lizard with a flame on its back
+    FPOLY([[1, 8], [4, 6], [8, 6], [10, 4], [11, 6], [8, 9], [3, 10]], GREEN);
+    LN(1, 8, 4, 6, INK); LN(4, 6, 8, 6, INK); LN(8, 6, 10, 4, INK); LN(11, 6, 8, 9, INK); LN(8, 9, 3, 10, INK); LN(3, 10, 1, 8, INK);
+    P(9, 5, INK); P(10, 5, PALE); R(4, 10, 1, 2, GREEN); R(8, 9, 1, 2, GREEN); P(0, 9, GREEN);
+    FPOLY([[6, 1], [8, 4], [7, 6], [5, 6], [4, 4]], RUST); FPOLY([[6, 3], [7, 5], [6, 6], [5, 5]], AMB);
+  },
+  tithe() {                    // a coin with a heart
+    DISC(6, 6, 5.2, INK); DISC(6, 6, 4.4, AMB); DISC(6, 6, 3.4, '#c58a28');
+    R(4, 4, 2, 1, RUST); R(6, 4, 2, 1, RUST); R(3, 5, 6, 2, RUST); R(4, 7, 4, 1, RUST); R(5, 8, 2, 1, RUST); P(4, 5, PALE);
+  },
+  wreckingball() {             // a heavy ball on a chain
+    DISC(8, 8, 4, INK); DISC(8, 8, 3.3, DARK); DISC(8, 8, 2.2, MID); P(6, 6, STEEL); P(7, 6, STEEL); P(6, 7, STEEL);
+    R(5, 2, 2, 2, STEEL); R(3, 4, 2, 2, MID); R(2, 0, 2, 2, STEEL); P(4, 3, INK);
+  },
+  trebuchet() {                // a lobbed ball over an arc, a lever below
+    for (const [x, y] of [[1, 9], [2, 6], [4, 4], [6, 3], [8, 4], [10, 7]]) P(x, y, MID);
+    DISC(10, 9, 1.8, INK); DISC(10, 9, 1.2, AMB); P(9, 8, PALE);
+    LN(1, 11, 7, 9, BROWN); LN(1, 10, 7, 8, '#8f6a45'); R(3, 9, 2, 3, DARK); DISC(2, 9, 1.4, STEEL);
+  },
+  kickback() {                 // a gun with a kick arrow behind it
+    R(5, 4, 6, 3, STEEL); R(5, 4, 6, 1, BONE); R(10, 3, 1, 5, MID); R(6, 7, 2, 4, DARK);
+    LN(4, 5, 0, 5, AMB); FPOLY([[0, 5], [3, 3], [3, 7]], AMB); P(1, 8, MID); P(2, 9, MID); P(0, 3, MID);
+  },
+  sleight() {                  // a card flipping out of a sleeve
+    FPOLY([[3, 1], [9, 2], [8, 10], [2, 9]], BONE); LN(3, 1, 9, 2, INK); LN(9, 2, 8, 10, INK); LN(8, 10, 2, 9, INK); LN(2, 9, 3, 1, INK);
+    DISC(5.5, 5.5, 1.6, RUST); P(5, 5, AMB); P(4, 3, INK); P(7, 8, INK);
+    P(10, 0, PALE); P(11, 1, AMB); P(0, 10, PALE); P(1, 11, AMB);
+  },
+  porcupine() {                // a spiky ball
+    for (let i = 0; i < 10; i++) { const a = i * Math.PI / 5; LN(6 + Math.cos(a) * 3, 6 + Math.sin(a) * 3, 6 + Math.cos(a) * 6, 6 + Math.sin(a) * 6, i % 2 ? STEEL : BONE); }
+    DISC(6, 6, 3.4, INK); DISC(6, 6, 2.8, BROWN); P(5, 5, '#8f6a45'); P(7, 6, INK);
+  },
+  cornered() {                 // a cracked heart in a corner
+    R(0, 0, 1, 12, MID); R(0, 11, 12, 1, MID);
+    FPOLY([[6, 10], [2, 6], [2, 3], [4, 2], [6, 4], [8, 2], [10, 3], [10, 6]], RUST);
+    LN(6, 4, 5, 6, INK); LN(5, 6, 7, 7, INK); LN(7, 7, 6, 9, INK);
+    P(3, 3, PALE); P(4, 3, PALE); P(10, 8, AMB); P(11, 9, AMB);
+  },
+  demopermit() {               // a crate with a stick of dynamite and a stamp
+    R(1, 4, 10, 8, INK); R(2, 5, 8, 6, BROWN); R(2, 5, 8, 1, '#8f6a45'); LN(2, 6, 9, 10, DARK); LN(9, 6, 2, 10, DARK);
+    R(4, 1, 3, 4, RUST); R(4, 1, 1, 4, '#d9703a'); P(5, 0, AMB); P(6, 0, PALE); P(7, 1, AMB);
+    R(8, 6, 3, 3, BONE); P(9, 7, RUST);
+  },
+  latebloomer() {              // a bud opening
+    R(5, 6, 2, 6, GREEN); R(5, 6, 1, 6, '#6e8a40'); FPOLY([[6, 9], [10, 7], [9, 10]], GREEN); FPOLY([[6, 10], [2, 8], [3, 11]], GREEN);
+    FPOLY([[6, 6], [3, 3], [4, 0.5], [6, 2]], AMB); FPOLY([[6, 6], [9, 3], [8, 0.5], [6, 2]], AMB); FPOLY([[6, 6], [5, 1.5], [7, 1.5]], PALE);
+    P(4, 3, RUST); P(8, 3, RUST); P(6, 5, RUST);
+  },
+  bricklayer() {               // bricks
+    for (const [y, off] of [[1, 0], [4, 3], [7, 0], [10, 3]]) { for (let x = off - 6; x < 12; x += 6) { R(Math.max(0, x), y, Math.min(5, 12 - Math.max(0, x)), 2, x + 5 > 0 ? RUST : INK); R(Math.max(0, x), y, Math.min(5, 12 - Math.max(0, x)), 1, '#d9703a'); } }
+    R(0, 3, 12, 1, STEEL); R(0, 6, 12, 1, STEEL); R(0, 9, 12, 1, STEEL);
+  },
+  partinggift() {              // a gift box with a lit fuse
+    R(1, 5, 10, 7, INK); R(2, 6, 8, 5, BONE); R(5, 6, 2, 5, RUST); R(2, 8, 8, 2, RUST); R(1, 4, 10, 2, INK); R(2, 4, 8, 1, STEEL);
+    LN(6, 4, 8, 2, DARK); P(9, 1, AMB); P(10, 0, PALE); P(8, 0, RUST); P(10, 2, AMB);
+  },
+  vendetta() {                 // a dagger
+    FPOLY([[9, 0], [10.5, 1.5], [4, 8]], BONE); LN(9, 0, 4, 8, INK); LN(10.5, 1.5, 4, 8, MID);
+    R(2, 7, 4, 1, STEEL); LN(2, 6, 6, 9, DARK); LN(1, 11, 4, 8, BROWN); LN(2, 11, 5, 8, '#8f6a45');
+    P(10, 3, RUST); P(10, 4, RUST);
+  },
+  lastcall() {                 // a big gold cannonball with a flame trail
+    FPOLY([[0, 6], [4, 3], [4, 9]], RUST); FPOLY([[1, 6], [4, 4.5], [4, 7.5]], AMB);
+    DISC(8, 6, 4.4, INK); DISC(8, 6, 3.7, AMB); DISC(8, 6, 2.6, '#ffd24a'); P(7, 4, PALE); P(8, 4, PALE); P(6, 5, PALE);
+  },
+  gravedigger() {              // a shovel stuck in a mound
+    LN(2, 0, 7, 8, BROWN); LN(3, 0, 8, 8, '#8f6a45');
+    FPOLY([[6, 7], [10, 6], [11, 9], [8, 11]], STEEL); LN(6, 7, 10, 6, INK); LN(10, 6, 11, 9, INK); LN(11, 9, 8, 11, INK); LN(8, 11, 6, 7, INK); P(9, 8, BONE);
+    R(0, 10, 6, 2, DARK); R(1, 9, 4, 1, BROWN); P(2, 9, '#8f6a45');
+  },
   unknown() { R(1, 1, 10, 10, DARK); R(2, 2, 8, 8, MID); P(5, 4, BONE); P(6, 4, BONE); P(6, 6, BONE); P(6, 8, BONE); },
 };
 

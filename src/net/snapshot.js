@@ -5,10 +5,11 @@
 //
 //  Snapshot player array: [x, y, vx, vy, aim, hp, alive, ammo, reloadLeft, blockLeft, blockCd, grounded, w, h, maxHp, magazine, reloadTime, blockCooldown]
 //  Snapshot `q` (the receiving client's OWN movement state, for prediction; NOT rounded):
-//    [x, y, vx, vy, grounded, groundId, wallDir, wallSide, coyote, jumpBuf, wallCoyote, wallRegrab, carry, jumpCharge, jumping, ghost, oobInv, moveSpeed, jumpVelocity]
+//    [x, y, vx, vy, grounded, groundId, wallDir, wallSide, coyote, jumpBuf, wallCoyote, wallRegrab, carry, jumpCharge, jumping, ghost, oobInv, moveSpeed, jumpVelocity, airLeft, airJumps, wallGlide]
+//  Snapshot slabs `sl`: [[id, x, y, w, h, hp, maxHp, life, owner], ...] (temporary blocks conjured by cards; every snapshot repeats the live ones).
 //  `ql` is how many client input frames the host has queued (the client speeds up / slows down its input clock a little to keep it near the cushion).
 //  `ack` is the sequence number of the last client input frame the host has simulated (one frame = one tick), `rt` the round tick after it.
-//  Snapshot bullet array: [id, x, y, vx, vy, r, owner, style]            style: 0 amber, 1 pale, 2 ember
+//  Snapshot bullet array: [id, x, y, vx, vy, r, owner, style]            style: 0 amber, 1 pale, 2 ember, 3 steel, 4 gold, 5 thorn
 //  Snapshot damaged-block list `bk`: [[id, hp], ...] (hp 0 = destroyed); every snapshot repeats it, so a lost
 //  message can never leave the map out of sync. Moving platforms and saws are NOT sent: their position is a
 //  pure function of the round tick (rt).
@@ -16,7 +17,7 @@
 import { CONFIG } from '../config.js';
 import { getMap } from '../maps/index.js';
 
-const STYLES = ['amber', 'pale', 'ember'];
+const STYLES = ['amber', 'pale', 'ember', 'steel', 'gold', 'thorn'];
 const r1 = (v) => Math.round(v * 10) / 10;
 const r2 = (v) => Math.round(v * 100) / 100;
 const r3 = (v) => Math.round(v * 1000) / 1000;
@@ -26,7 +27,7 @@ const r3 = (v) => Math.round(v * 1000) / 1000;
 // rounded copy would make the replay branch differently from the host. Full doubles replay bit for bit.
 export function moveState(p) {
   return [p.x, p.y, p.vx, p.vy, p.grounded ? 1 : 0, p.groundId || 0, p.wallDir, p.wallSide, p.coyote, p.jumpBuf, p.wallCoyote, p.wallRegrab, p.carry,
-    p.jumpCharge, p.jumping ? 1 : 0, p.ghost, p.oobInv, p.stats.moveSpeed, p.stats.jumpVelocity];
+    p.jumpCharge, p.jumping ? 1 : 0, p.ghost, p.oobInv, p.stats.moveSpeed, p.stats.jumpVelocity, p.airLeft, p.stats.airJumps, p.stats.wallGlide];
 }
 
 export function buildSnap(state, seq, ack, mvs, ql = 0) {
@@ -39,10 +40,12 @@ export function buildSnap(state, seq, ack, mvs, ql = 0) {
     p: state.players.map((p) => [r1(p.x), r1(p.y), r1(p.vx), r1(p.vy), r3(p.aim), r1(p.hp), p.alive ? 1 : 0, p.ammo, r2(p.reloadLeft), r2(p.blockLeft), r2(p.blockCd), p.grounded ? 1 : 0,
       r1(p.w), r1(p.h), p.stats.maxHp, p.stats.magazine, p.stats.reloadTime, p.stats.blockCooldown]),
     b: state.bullets.map((b) => [b.id, r1(b.x), r1(b.y), r1(b.vx), r1(b.vy), r1(b.r), b.owner, Math.max(0, STYLES.indexOf(b.style))]),
-    bk: state.blocks.filter((k) => !k.alive || k.hp < k.maxHp).map((k) => [k.id, k.alive ? r1(k.hp) : 0]),
+    bk: state.blocks.filter((k) => !k.temp && (!k.alive || k.hp < k.maxHp)).map((k) => [k.id, k.alive ? r1(k.hp) : 0]),
+    sl: state.blocks.filter((k) => k.temp && k.alive).map((k) => [k.id, k.x, k.y, k.w, k.h, r1(k.hp), k.maxHp, r2(k.life), k.owner]),   // temporary slabs (Bricklayer): sent whole, they are not in the map
   };
 }
 
+const slabBlock = (s) => ({ id: s[0], kind: 'slab', temp: true, x: s[1], y: s[2], w: s[3], h: s[4], hp: s[5], maxHp: s[6], life: s[7], owner: s[8], alive: true });
 const lerp = (a, b, t) => a + (b - a) * t;
 function lerpAngle(a, b, t) { let d = b - a; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; return a + d * t; }
 const lerpPos = (a, b, t) => (Math.abs(b - a) > 120 ? b : lerp(a, b, t));   // teleports (respawn, out of bounds) are not smoothed
@@ -121,6 +124,7 @@ export class ClientWorld {
     if (this._blk && this._blk.tick === last.tick && this._blk.map === this.mapId) return this._blk.list;
     const dm = new Map(last.bk);
     const list = this.baseBlocks.map((k) => ({ ...k, alive: dm.has(k.id) ? dm.get(k.id) > 0 : true }));
+    for (const s of last.sl || []) list.push(slabBlock(s));
     this._blk = { tick: last.tick, map: this.mapId, list };
     return list;
   }
@@ -174,6 +178,7 @@ export class ClientWorld {
       const hp = dm.has(k.id) ? dm.get(k.id) : k.maxHp;
       return { ...k, hp, alive: hp > 0 };
     });
+    for (const sl of cur.sl || []) s.blocks.push(slabBlock(sl));
     return { state: s, alpha };
   }
 }

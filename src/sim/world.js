@@ -10,7 +10,8 @@ import { rand } from './rng.js';
 import { platformPos } from './platforms.js';
 import { createPlayer, resetPlayerForRound, stepPlayer, checkOutOfBounds, setPlayerCards } from './player.js';
 import { stepBullets } from './bullet.js';
-import { emit, killPlayer } from './combat.js';
+import { emit, killPlayer, fireHook, stepTimers, stepSlabs } from './combat.js';
+import { updateDynamic } from './cardfx.js';
 import { createMatch, enterAfterRound, tickMatch, answerQuiz, continueIntent, pickCard, playAgain, hoverCard } from './match.js';
 import { getHazards, solidHazardColliders, stepHazards } from './hazards.js';
 
@@ -38,6 +39,7 @@ export function createState({ mapId, seed = 1, cards = [[], []], rotate = false,
     players: [createPlayer(0, cards[0] || []), createPlayer(1, cards[1] || [])],
     bullets: [],
     blocks: [],
+    timers: [],             // delayed card effects (see combat.js schedule)
     cheats: { invulnerable: [false, false] },   // set by the debug panel
     match: createMatch(),   // quiz / card pick / match end state (sim/match.js)
     events: [],
@@ -67,7 +69,7 @@ export function startRound(state) {
   state.phase = 'playing'; state.overTimer = 0; state.result = null;
   Object.assign(state.match, { quiz: null, result: null, offer: [], removed: [], dummy: null, pickedCard: null, loser: -1, skipped: false, again: [false, false] });
   state.roundTick = 0; state.roundTime = 0; state.suddenDeath = false;
-  state.bullets = [];
+  state.bullets = []; state.timers = [];
   state.blocks = map.destructibles.map((d) => {
     const hp = d.hp ?? (d.kind === 'barrel' ? CONFIG.hazards.barrel.hp : 50);
     return { id: d.id, kind: d.kind || 'crate', x: d.x, y: d.y, w: d.w, h: d.h, hp, maxHp: hp, alive: true };
@@ -157,6 +159,13 @@ export function step(state, inputs, dt = STEP) {
   state.tick += 1;
   state.roundTick += 1;
 
+  stepSlabs(state, dt);                                        // slabs run out, delayed card effects (fuses) go off
+  stepTimers(state, dt);
+  for (const p of state.players) {                             // dynamic cards (low HP, clinging, seconds into the round)
+    if (!p.alive || !p.cards.length) continue;
+    const ch = updateDynamic(state, p);
+    if (ch) for (const [id, o, k] of ch) if (k > o) emit(state, 'buff', { player: p.index, src: id, x: p.x, y: p.y, level: k });
+  }
   const colliders = getColliders(state);
 
   for (let i = 0; i < 2; i++) stepPlayer(state, state.players[i], (inputs && inputs[i]) || NEUTRAL, colliders, dt);
@@ -174,7 +183,7 @@ export function step(state, inputs, dt = STEP) {
     if (state.suddenDeath) {
       for (const p of state.players) {
         if (!p.alive || state.cheats.invulnerable[p.index]) continue;
-        p.hp -= CONFIG.round.suddenDeathDps * dt;
+        p.hp -= CONFIG.round.suddenDeathDps * (p.stats.maxHp / CONFIG.base.maxHp) * dt;     // a fraction of MAX HP: 2 HP/s at 100, so a tank does not win sudden death just by having more HP (soak: Thick Skin won 89%)
         if (p.hp <= 0) killPlayer(state, p.index, -1, 'suddenDeath');
       }
     }
@@ -190,9 +199,15 @@ export function step(state, inputs, dt = STEP) {
       state.result = { winner };
       if (winner >= 0) state.scores[winner] += 1;                                       // a draw scores nothing
       emit(state, 'roundEnd', { winner });
+      for (let i = 0; i < 2; i++) fireHook(state, 'onRoundEnd', i, { won: winner === i });
     }
   } else {
-    state.overTimer -= dt;
+    const w = state.result ? state.result.winner : -1;
+    if (w >= 0 && !state.players[w].alive) {                   // the winner died to the loser's last blast (Parting Gift): both are dead = a draw
+      state.scores[w] -= 1; state.result = { winner: -1 };
+      emit(state, 'roundEnd', { winner: -1, converted: true });
+    }
+    if (!state.timers.some((t) => t.hold)) state.overTimer -= dt;   // a fuse that is still burning holds the round open
     if (state.overTimer <= 0 && enterAfterRound(state) === 'restart') nextRound(state);   // a draw restarts; otherwise the quiz / match end takes over
   }
   return state.events;

@@ -320,9 +320,10 @@ test('map rotation online: the host picks a new map every round, the client foll
     if (R.guest.ready && h.phase === 'playing' && h.roundTick > 90 && g.phase === 'playing' && g.mapId !== h.mapId) mismatch++;
     if (h.roundTick === 1 && h.phase === 'playing' && seen[seen.length - 1] !== h.round) { seen.push(h.round); rounds++; R.maps = (R.maps || []).concat(h.mapId); }
   };
-  R.runUntil(() => (R.maps || []).length >= 2 * N, 40 * 60 * 1000);
-  ok((R.maps || []).length >= 2 * N, 'enough rounds were played: ' + (R.maps || []).join());
-  const m = R.maps; for (let b = 0; b < 2; b++) ok(new Set(m.slice(b * N, b * N + N)).size === N, 'all maps in block ' + b + ': ' + m.slice(b * N, b * N + N));
+  R.runUntil(() => (R.maps || []).length >= 2 * N + 1, 40 * 60 * 1000);
+  ok((R.maps || []).length >= 2 * N + 1, 'enough rounds were played: ' + (R.maps || []).join());
+  const m = R.maps;   // (the first map was given by the host, the shuffled bags start after it)
+  for (let b = 0; b < 2; b++) ok(new Set(m.slice(1 + b * N, 1 + b * N + N)).size === N, 'all maps in block ' + b + ': ' + m.slice(1 + b * N, 1 + b * N + N));
   for (let i = 1; i < m.length; i++) ok(m[i] !== m[i - 1], 'no map twice in a row');
   ok(mismatch < 200, 'the client shows the host map (apart from the moment of the switch): ' + mismatch + ' mismatching slices');
   console.log('        maps: ' + m.join(' > '));

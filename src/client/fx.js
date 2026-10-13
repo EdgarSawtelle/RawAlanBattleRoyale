@@ -4,7 +4,9 @@
 //  by fxUpdate() once per simulation tick, so pausing / slow motion / single-stepping freeze them.
 // ============================================================================
 import { CONFIG } from '../config.js';
-import { ctx, P, R, L, K, DISC, ELLpx, LNf, bay, hash } from './px.js';
+import { ctx, P, R, L, K, DISC, ELLpx, LNf, bay, hash, RING, TXT, TW } from './px.js';
+import { CARDS_BY_ID } from '../cards.js';
+import { drawIcon } from './icons.js';
 
 export const FXC = { amber: '#e9a93c', ember: '#c9591f', pale: '#f8ebb8', hot: '#fff6d8', smoke1: '#45433f', smoke2: '#66655c', smoke3: '#8a897c', dust: '#9a9684', shield: ['#e8efdc', '#a6d0c4', '#6c9d94', '#3d6963'] };
 const BARREL = ['#a8461f', '#c9591f', '#7a3a1c', '#2b2a27'];
@@ -98,7 +100,51 @@ export function fxEvents(fx, events) {
         fx.shake = Math.max(fx.shake, 2);
         break;
       case 'land': puff(fx, e.x, e.y, 3, 70, 1, 0.35, FXC.dust); break;
-      case 'jump': puff(fx, e.x, e.y, e.wall ? 3 : 2, 50, 1, 0.3, FXC.dust); break;
+      case 'jump':
+        puff(fx, e.x, e.y, e.wall ? 3 : 2, 50, 1, 0.3, FXC.dust);
+        if (e.air) fx.anims.push({ kind: 'ring', x: e.x, y: e.y + 2, r: 20, t: 0, dur: 0.28, col: FXC.pale, col2: FXC.shield[2], flat: true });     // Cloudstep: a ring under the feet
+        break;
+      // ---- card effects: the opponent must be able to read what just happened ----
+      case 'buff': {                                              // a timed or conditional power-up started: a ring around the player and the card's icon rising
+        const card = CARDS_BY_ID[e.src];
+        fx.anims.push({ kind: 'ring', x: e.x, y: e.y, r: 30 + 4 * (e.level || 0), t: 0, dur: 0.45, col: FXC.amber, col2: FXC.pale });
+        if (card) fx.anims.push({ kind: 'icon', x: e.x, y: e.y - 26, icon: card.icon, t: 0, dur: 0.9 });
+        spark(fx, e.x, e.y, -Math.PI / 2, 1.1, 6, 200, [FXC.amber, FXC.pale], 0.5, 200);
+        break;
+      }
+      case 'heal':
+        fx.anims.push({ kind: 'label', x: e.x, y: e.y - 22, text: '+' + Math.round(e.amount), col: '#a8d46a', t: 0, dur: 0.9 });
+        spark(fx, e.x, e.y, -Math.PI / 2, 1.0, 5, 140, ['#a8d46a', '#e8f5b8'], 0.6, 100);
+        break;
+      case 'cardLost': {
+        const card = CARDS_BY_ID[e.cardId];
+        fx.anims.push({ kind: 'label', x: e.x, y: e.y - 34, text: (card ? card.name.toUpperCase() : 'CARD') + ' SPENT', col: FXC.amber, t: 0, dur: 1.4 });
+        if (card) fx.anims.push({ kind: 'icon', x: e.x, y: e.y - 20, icon: card.icon, t: 0, dur: 1.2 });
+        break;
+      }
+      case 'slab':
+        puff(fx, e.x, e.y, 5, 60, 2, 0.5, FXC.dust); spark(fx, e.x, e.y, -Math.PI / 2, 1.4, 8, 220, ['#c9d0d6', '#8f97a0', FXC.pale], 0.4, 500);
+        fx.anims.push({ kind: 'ring', x: e.x, y: e.y, r: 26, t: 0, dur: 0.3, col: '#c9d0d6', col2: '#8f97a0' });
+        break;
+      case 'slabEnd': puff(fx, e.x, e.y, 3, 50, 2, 0.5, FXC.dust); spark(fx, e.x, e.y, -Math.PI / 2, 1.6, 8, 160, ['#c9d0d6', '#8f97a0'], 0.5, 900); break;
+      case 'cardFx': {
+        const card = CARDS_BY_ID[e.card];
+        switch (e.kind) {
+          case 'refill':
+            fx.anims.push({ kind: 'label', x: e.x, y: e.y - 24, text: 'RELOADED', col: FXC.pale, t: 0, dur: 0.9 });
+            fx.anims.push({ kind: 'ring', x: e.x, y: e.y, r: 28, t: 0, dur: 0.35, col: FXC.shield[1], col2: FXC.pale });
+            break;
+          case 'ring': fx.anims.push({ kind: 'ring', x: e.x, y: e.y, r: 70, t: 0, dur: 0.3, col: '#a9d45a', col2: '#f4ffd0' }); break;
+          case 'fuse': fx.anims.push({ kind: 'fuse', x: e.x, y: e.y, r: 112, t: 0, dur: e.t || 0.5 }); fx.anims.push({ kind: 'label', x: e.x, y: e.y - 26, text: 'PARTING GIFT', col: FXC.ember, t: 0, dur: 0.9 }); break;
+          case 'permit': fx.anims.push({ kind: 'ring', x: e.x, y: e.y, r: 70, t: 0, dur: 0.35, col: FXC.amber, col2: FXC.pale }); break;
+          case 'ringout':
+            fx.anims.push({ kind: 'label', x: e.x, y: Math.min(CONFIG.field.h - 24, e.y) - 18, text: 'RING OUT', col: FXC.ember, t: 0, dur: 1.2 });
+            if (card) fx.anims.push({ kind: 'icon', x: e.x, y: Math.min(CONFIG.field.h - 24, e.y) - 36, icon: card.icon, t: 0, dur: 1.2 });
+            break;
+          default: break;
+        }
+        break;
+      }
       default: break;
     }
   }
@@ -204,6 +250,41 @@ export function fxDraw(fx) {
         break;
       }
       case 'explosion': drawExplosion(a); break;
+      case 'ring': {                                              // an expanding ring (air jump, buff, shard ring, slab)
+        const x = L(a.x), y = L(a.y), r = Math.max(2, Math.round(L(a.r) * (0.3 + 0.8 * Math.sqrt(t)))), yy = a.flat ? 0.45 : 1;
+        if (t > 0.55 && (x + y) % 2) break;
+        const g2 = ctx();
+        for (let i = 0; i < 48; i++) {
+          const an = i / 48 * Math.PI * 2, px = Math.round(x + Math.cos(an) * r), py = Math.round(y + Math.sin(an) * r * yy);
+          if (t > 0.35 && (i % 2)) continue;
+          g2.fillStyle = i % 4 === 0 ? a.col2 : a.col; g2.fillRect(px, py, 1, 1);
+        }
+        break;
+      }
+      case 'icon': {                                              // the card's icon floats up and fades
+        const x = L(a.x) - 6, y = Math.round(L(a.y) - t * 14) - 6;
+        if (t > 0.7 && (x + y) % 2) break;
+        R(x - 1, y - 1, 14, 14, '#0e0d0c'); R(x, y, 12, 12, '#2c2924'); drawIcon(a.icon, x, y, 1);
+        break;
+      }
+      case 'label': {                                             // short text floating up (+heal, RING OUT, ...)
+        const w = TW(a.text, 1), x = Math.round(L(a.x) - w / 2), y = Math.round(L(a.y) - t * 12);
+        if (t > 0.7 && (x + y) % 2) break;
+        TXT(a.text, x + 1, y + 1, '#0e0d0c', 1); TXT(a.text, x, y, a.col, 1);
+        break;
+      }
+      case 'fuse': {                                              // Parting Gift: the blast radius blinks faster and faster until it goes off
+        const x = L(a.x), y = L(a.y), r = Math.round(L(a.r)), blink = Math.floor(t * (6 + 14 * t)) % 2 === 0;
+        const g2 = ctx();
+        for (let i = 0; i < 96; i++) {                          // the whole blast radius as a dotted ring, bright and thick while it blinks on
+          const an = i / 96 * Math.PI * 2; if (i % 2) continue;
+          const px = Math.round(x + Math.cos(an) * r), py = Math.round(y + Math.sin(an) * r);
+          g2.fillStyle = '#0e0d0c'; g2.fillRect(px - 1, py - 1, 4, 4);                        // dark rim so it reads on any backdrop
+          g2.fillStyle = blink ? (i % 4 ? FXC.hot : FXC.amber) : FXC.ember; g2.fillRect(px, py, 2, 2);
+        }
+        DISC(x, y, 2 + Math.round(t * 3), blink ? FXC.hot : FXC.ember);
+        break;
+      }
       default: break;
     }
   }

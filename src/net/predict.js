@@ -31,7 +31,7 @@ function bodyFrom(q, pw, ph) {
   return {
     index: 1, x: q[0], y: q[1], vx: q[2], vy: q[3], w: pw, h: ph,
     grounded: !!q[4], groundId: q[5] || null, wallDir: q[6], wallSide: q[7], coyote: q[8], jumpBuf: q[9], wallCoyote: q[10], wallRegrab: q[11], carry: q[12],
-    jumpCharge: q[13], jumping: !!q[14], ghost: q[15], oobInv: q[16], stats: { moveSpeed: q[17], jumpVelocity: q[18] },
+    jumpCharge: q[13], jumping: !!q[14], ghost: q[15], oobInv: q[16], airLeft: q[19], stats: { moveSpeed: q[17], jumpVelocity: q[18], airJumps: q[20], wallGlide: q[21] },
   };
 }
 const copyBody = (b) => ({ ...b, stats: { ...b.stats } });

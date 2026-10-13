@@ -48,7 +48,7 @@ function stepBullet(state, b, colliders, dt) {
     }
     // left the screen
     const m = C.bulletKillMargin;
-    if (b.x < -m || b.x > F.w + m || b.y < -m || b.y > F.h + m) return true;
+    if (b.x < -m || b.x > F.w + m || b.y < -C.bulletKillMarginTop || b.y > F.h + m) return true;
   }
   return false;
 }
@@ -79,7 +79,7 @@ function hitPlayers(state, b) {
 function hitTerrain(state, b, c, nx, ny, embedded) {
   const block = c.kind === 'block' ? state.blocks.find((k) => k.id === c.id) : null;
   if (!embedded && b.bouncesLeft > 0) {
-    if (block) damageBlock(state, block, b.damage * CONFIG.combat.bulletBlockDamageMul, b.x, b.y);
+    if (block) damageBlock(state, block, b.damage * CONFIG.combat.bulletBlockDamageMul, b.x, b.y, b.owner, b.shotId);
     if (nx !== 0) b.vx = -b.vx;
     if (ny !== 0) b.vy = -b.vy;
     b.bouncesLeft -= 1; b.bounces += 1;
@@ -89,7 +89,7 @@ function hitTerrain(state, b, c, nx, ny, embedded) {
     return false;
   }
   fireHook(state, 'onBulletHit', b.owner, { bullet: b, hitType: block ? 'block' : 'terrain' });
-  if (block) damageBlock(state, block, b.damage * CONFIG.combat.bulletBlockDamageMul, b.x, b.y);
+  if (block) damageBlock(state, block, b.damage * CONFIG.combat.bulletBlockDamageMul, b.x, b.y, b.owner, b.shotId);
   emit(state, 'impact', { x: b.x, y: b.y, kind: block ? 'block' : 'terrain', style: b.style, nx, ny });
   return true;
 }

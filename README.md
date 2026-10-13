@@ -1,8 +1,8 @@
 # RawAlanBattleRoyale
 
 A tiny two-player arena duel that runs in the browser, no install. Shoot, block, jump around a ruined open arena, and
-when you lose a round answer a quiz question: the better you answer, the better the card you pick. The cards stack up
-over the match (first to 5 rounds). Play against a dummy, or against a friend over a direct peer-to-peer connection.
+when you lose a round answer a quiz question: the better you answer, the better the card you pick. There are **30 cards** (bouncing and exploding bullets, parries, wall clinging, air jumps, barrels, slabs, ring-outs and more) in a handful of build styles that combine
+(see [docs/CARDS.md](docs/CARDS.md)). The cards stack up over the match (first to 5 rounds). Play against a dummy, or against a friend over a direct peer-to-peer connection.
 
 **Play:** https://edgarsawtelle.github.io/RawAlanBattleRoyale/
 

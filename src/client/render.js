@@ -12,6 +12,8 @@ import { getHazards } from '../sim/hazards.js';
 import { W, H, K, L, use, ctx, P, R, LN, LNf, DISC, ELL, ELLpx, DITH, hash } from './px.js';
 import { getBackground, getBackgroundFade } from './background.js';
 import { fxDraw } from './fx.js';
+import { CARDS_BY_ID } from '../cards.js';
+import { computeStats } from '../sim/cardfx.js';
 
 const INK = '#0e0d0c';
 
@@ -20,7 +22,8 @@ const PC = [
   { ink: '#17110d', base: '#a2552f', hi: '#c77c44', lo: '#693220', acc: '#d6a444', acc2: '#efca74', leather: '#5a4130', lens: '#e1dcc0', patch: '#8c8466', metal: '#2c2a27', metalHi: '#75726a', wood: '#6e4c31' },
   { ink: '#0f1717', base: '#4a9086', hi: '#7bbfae', lo: '#2c6360', hood: '#376f68', hoodHi: '#63ab9c', acc: '#b6ab88', acc2: '#d6cda9', leather: '#53472f', lens: '#c9e6dc', patch: '#a8814a', metal: '#2c2a27', metalHi: '#75726a', wood: '#6e4c31', filter: '#8b9088' },
 ];
-const BULLET = { amber: ['#fbf0c0', '#efae3a', '#9c5420'], pale: ['#ffffff', '#f6e7a1', '#b69a4a'], ember: ['#ffe9a8', '#e0642a', '#7a2a14'] };
+const BULLET = { amber: ['#fbf0c0', '#efae3a', '#9c5420'], pale: ['#ffffff', '#f6e7a1', '#b69a4a'], ember: ['#ffe9a8', '#e0642a', '#7a2a14'],
+  steel: ['#ffffff', '#b9dcee', '#4f7a92'], gold: ['#fffbe0', '#ffd24a', '#b8741c'], thorn: ['#f4ffd0', '#a9d45a', '#4d6e24'] };
 const SHIELD = { rim: '#e8efdc', mid: '#a6d0c4', soft: '#6c9d94', deep: '#3d6963' };
 
 // ---- helpers --------------------------------------------------------------------------------------------------------
@@ -215,6 +218,33 @@ function barrelSprite(w, h, damaged) {
   return (barrelSprites[key] = c);
 }
 
+// Bricklayer's slab: pale stone, an edge in its owner's colour, cracks as it is shot, blinks for its last second.
+function drawSlab(b) {
+  if (b.life !== undefined && b.life < 1 && (Math.floor(b.life * 10) & 1) === 0) return;
+  const x = L(b.x), y = L(b.y), w = Math.max(2, L(b.w)), h = Math.max(2, L(b.h)), r = b.hp / b.maxHp;
+  const tint = b.owner === 1 ? '#7bbfae' : '#c77c44';
+  R(x - 1, y - 1, w + 2, h + 2, INK); R(x, y, w, h, '#8f97a0');
+  if (w >= h) { R(x, y, w, 1, '#c9d0d6'); R(x, y + h - 1, w, 1, '#5b626b'); R(x, y, w, 1, tint); for (let i = 5; i < w - 2; i += 9) R(x + i, y + 1, 1, h - 2, '#79818a'); }
+  else { R(x, y, 1, h, '#c9d0d6'); R(x + w - 1, y, 1, h, '#5b626b'); R(x, y, w, 1, tint); for (let j = 5; j < h - 2; j += 9) R(x + 1, y + j, w - 2, 1, '#79818a'); }
+  if (r < 0.66) { P(x + (w >> 1), y + 1, INK); P(x + (w >> 1) + 1, y + 2, INK); }
+  if (r < 0.33) { for (let i = 0; i < Math.max(w, h) - 2; i += 3) P(x + Math.min(w - 1, (w >= h ? i : 1)), y + Math.min(h - 1, (w >= h ? 1 + (i % 2) : i)), INK); }
+}
+
+// Trebuchet: a dotted preview of YOUR shot's arc (only your own, only with a card that asks for it: card.preview).
+function drawAimPreview(state, map, p, q) {
+  if (!p.alive || !p.cards.some((id) => CARDS_BY_ID[id] && CARDS_BY_ID[id].preview)) return;
+  const st = computeStats(p.cards), d = Math.max(CONFIG.player.muzzleDistance, Math.max(p.w, p.h) / 2 + 3);
+  const vx = Math.cos(p.aim) * st.bulletSpeed, vy = Math.sin(p.aim) * st.bulletSpeed, ox = q.x + Math.cos(p.aim) * d, oy = q.y + Math.sin(p.aim) * d;
+  const solids = map.solids.concat(state.blocks.filter((b) => b.alive));
+  const g = ctx();
+  for (let i = 1; i <= 60; i++) {
+    const t = i * 0.045, x = ox + vx * t, y = oy + vy * t + 0.5 * st.bulletGravity * t * t;
+    if (y > CONFIG.field.h + 40 || x < -40 || x > CONFIG.field.w + 40) break;
+    if (solids.some((s) => x > s.x && x < s.x + s.w && y > s.y && y < s.y + s.h)) { DISC(L(x), L(y), 2, '#f8ebb8'); break; }
+    if (i % 2 === 0 || i < 4) { g.fillStyle = '#0e0d0c'; g.fillRect(L(x) - 1, L(y) - 1, 4, 4); g.fillStyle = i % 4 === 0 ? '#f8ebb8' : '#e9a93c'; g.fillRect(L(x), L(y), 2, 2); }
+  }
+}
+
 // ---- survivors ------------------------------------------------------------------------------------------------------------------------------
 const P_SCALE = 1.0;   // drawn size relative to the hitbox
 function drawSurvivor(kind, p, x, y, flash, bobFrame) {
@@ -316,7 +346,7 @@ function drawBullet(trail, b) {
 export function createRenderer(canvas) {
   canvas.width = W; canvas.height = H;
   const g = canvas.getContext('2d');
-  const R_ = { canvas, g, terrainMapId: null, terrain: null, trails: new Map(), showHitboxes: false };
+  const R_ = { canvas, g, terrainMapId: null, terrain: null, trails: new Map(), showHitboxes: false, me: -1 };
 
   // Draw one frame. `prev` = positions captured before the last tick (for interpolation), `alpha` 0..1.
   R_.draw = function (state, prev, alpha, fx) {
@@ -338,7 +368,8 @@ export function createRenderer(canvas) {
     for (const b of state.blocks) {
       if (!b.alive) continue;
       const r = b.hp / b.maxHp, st = r > 0.66 ? 0 : r > 0.33 ? 1 : 2;
-      if (b.kind === 'barrel') g.drawImage(barrelSprite(L(b.w), L(b.h), r < 0.99), L(b.x), L(b.y));
+      if (b.kind === 'slab') drawSlab(b);
+      else if (b.kind === 'barrel') g.drawImage(barrelSprite(L(b.w), L(b.h), r < 0.99), L(b.x), L(b.y));
       else g.drawImage(blockSprite(L(b.w), L(b.h), st, Math.floor(b.x / 32 + b.y / 32)), L(b.x), L(b.y));
     }
     // moving platforms (interpolated between the previous and current tick)
@@ -370,6 +401,8 @@ export function createRenderer(canvas) {
       drawSurvivor(i, p, q.x, q.y, fx.flash[i], moving && (Math.floor(fx.time * 12) & 1));
       if (p.blockLeft > 0) drawShield(p, q.x, q.y, p.blockLeft);
     });
+
+    if (R_.me >= 0 && state.phase === 'playing') drawAimPreview(state, map, state.players[R_.me], pos[R_.me]);
 
     // bullets with trails
     const seen = new Set();
